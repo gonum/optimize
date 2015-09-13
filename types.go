@@ -73,12 +73,6 @@ type Location struct {
 	Hessian  *mat64.SymDense
 }
 
-// LinesearchLocation is a location for a linesearch subiteration
-type LinesearchLocation struct {
-	F          float64 // Function value at the step
-	Derivative float64 // Projected gradient in the linesearch direction
-}
-
 // Result represents the answer of an optimization run. It contains the optimum
 // location as well as the Status at convergence and Statistics taken during the
 // run.
@@ -239,11 +233,4 @@ func resizeSymDense(m *mat64.SymDense, dim int) *mat64.SymDense {
 		return mat64.NewSymDense(dim, nil)
 	}
 	return mat64.NewSymDense(dim, m.RawSymmetric().Data[:dim*dim])
-}
-
-func resizeTriDense(m *mat64.TriDense, dim int) *mat64.TriDense {
-	if m == nil || cap(m.RawTriangular().Data) < dim*dim {
-		return mat64.NewTriDense(dim, true, nil)
-	}
-	return mat64.NewTriDense(dim, true, m.RawTriangular().Data[:dim*dim])
 }

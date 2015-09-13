@@ -10,7 +10,7 @@ import (
 )
 
 // BFGS implements the Method interface to perform the Broyden–Fletcher–Goldfarb–Shanno
-// optimization method with the given linesearch method. If LinesearchMethod is nil,
+// optimization method with the given linesearch method. If Linesearcher is nil,
 // it will be set to a reasonable default.
 //
 // BFGS is a quasi-Newton method that performs successive rank-one updates to
@@ -18,44 +18,42 @@ import (
 // convergence when in proximity to a local minimum. It has memory cost that is
 // O(n^2) relative to the input dimension.
 type BFGS struct {
-	LinesearchMethod LinesearchMethod
+	Linesearcher Linesearcher
 
-	linesearch *Linesearch
+	ls *LinesearchMethod
 
 	x    []float64 // location of the last major iteration
 	grad []float64 // gradient at the last major iteration
 	dim  int
 
 	// Temporary memory
-	y       []float64
-	yVec    *mat64.Vector
-	s       []float64
-	tmpData []float64
-	tmpVec  *mat64.Vector
+	y      []float64
+	yVec   *mat64.Vector
+	s      []float64
+	sVec   *mat64.Vector
+	tmp    []float64
+	tmpVec *mat64.Vector
 
 	invHess *mat64.SymDense
 
 	first bool // Is it the first iteration (used to set the scale of the initial hessian)
 }
 
-// NOTE: This method exists so that it's easier to use a bfgs algorithm because
-// it implements Method
-
 func (b *BFGS) Init(loc *Location, xNext []float64) (EvaluationType, IterationType, error) {
-	if b.LinesearchMethod == nil {
-		b.LinesearchMethod = &Bisection{}
+	if b.Linesearcher == nil {
+		b.Linesearcher = &Bisection{}
 	}
-	if b.linesearch == nil {
-		b.linesearch = &Linesearch{}
+	if b.ls == nil {
+		b.ls = &LinesearchMethod{}
 	}
-	b.linesearch.Method = b.LinesearchMethod
-	b.linesearch.NextDirectioner = b
+	b.ls.Linesearcher = b.Linesearcher
+	b.ls.NextDirectioner = b
 
-	return b.linesearch.Init(loc, xNext)
+	return b.ls.Init(loc, xNext)
 }
 
 func (b *BFGS) Iterate(loc *Location, xNext []float64) (EvaluationType, IterationType, error) {
-	return b.linesearch.Iterate(loc, xNext)
+	return b.ls.Iterate(loc, xNext)
 }
 
 func (b *BFGS) InitDirection(loc *Location, dir []float64) (stepSize float64) {
@@ -69,9 +67,10 @@ func (b *BFGS) InitDirection(loc *Location, dir []float64) (stepSize float64) {
 
 	b.y = resize(b.y, dim)
 	b.s = resize(b.s, dim)
-	b.tmpData = resize(b.tmpData, dim)
+	b.tmp = resize(b.tmp, dim)
 	b.yVec = mat64.NewVector(dim, b.y)
-	b.tmpVec = mat64.NewVector(dim, b.tmpData)
+	b.sVec = mat64.NewVector(dim, b.s)
+	b.tmpVec = mat64.NewVector(dim, b.tmp)
 
 	if b.invHess == nil || cap(b.invHess.RawSymmetric().Data) < dim*dim {
 		b.invHess = mat64.NewSymDense(dim, nil)
@@ -144,18 +143,18 @@ func (b *BFGS) NextDirection(loc *Location, dir []float64) (stepSize float64) {
 	firstTermConst := (sDotY + yBy) / (sDotYSquared)
 	b.tmpVec.MulVec(b.invHess, b.yVec)
 
-	b.invHess.RankTwo(b.invHess, -1/sDotY, b.tmpData, b.s)
-	b.invHess.SymRankOne(b.invHess, firstTermConst, b.s)
+	b.invHess.RankTwo(b.invHess, -1/sDotY, b.tmpVec, b.sVec)
+	b.invHess.SymRankOne(b.invHess, firstTermConst, b.sVec)
 
 	// update the bfgs stored data to the new iteration
 	copy(b.x, loc.X)
 	copy(b.grad, loc.Gradient)
 
 	// Compute the new search direction
-	dirmat := mat64.NewDense(b.dim, 1, dir)
-	gradmat := mat64.NewDense(b.dim, 1, loc.Gradient)
+	d := mat64.NewVector(b.dim, dir)
+	g := mat64.NewVector(b.dim, loc.Gradient)
 
-	dirmat.Mul(b.invHess, gradmat) // new direction stored in place
+	d.MulVec(b.invHess, g) // new direction stored in place
 	floats.Scale(-1, dir)
 	return 1
 }
