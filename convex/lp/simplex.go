@@ -188,9 +188,9 @@ func simplex(initialBasic []int, c []float64, A mat64.Matrix, b []float64, tol f
 	// basic solution. The initial basic solution should be feasible and contain
 	// a set of linearly independent columns of A.
 
-	fmt.Println("a =", A)
-	fmt.Println("b =", b)
-	fmt.Println("c = ", c)
+	//fmt.Println("a =", A)
+	//fmt.Println("b =", b)
+	//fmt.Println("c = ", c)
 
 	m, n := A.Dims()
 	if len(c) != n {
@@ -214,7 +214,7 @@ func simplex(initialBasic []int, c []float64, A mat64.Matrix, b []float64, tol f
 			}
 		}
 		if isZero && c[j] < 0 {
-			fmt.Println("Unbounded for zero row")
+			// fmt.Println("Unbounded for zero row")
 			return math.Inf(-1), nil, nil, ErrUnbounded
 		}
 	}
@@ -224,14 +224,14 @@ func simplex(initialBasic []int, c []float64, A mat64.Matrix, b []float64, tol f
 	var xb []float64
 	var err error
 	if initialBasic == nil {
-		fmt.Println("Initial basic nil")
+		// fmt.Println("Initial basic nil")
 		basicIdxs, ab, xb, err = findInitialBasic(A, b)
 		if err != nil {
 			return math.NaN(), nil, nil, err
 		}
 	} else {
-		fmt.Println("Initial basic nonnil")
-		fmt.Println("c = ", c)
+		// fmt.Println("Initial basic nonnil")
+		// fmt.Println("c = ", c)
 		if len(initialBasic) != m {
 			panic("lp: incorrect number of initial vectors")
 		}
@@ -300,11 +300,12 @@ func simplex(initialBasic []int, c []float64, A mat64.Matrix, b []float64, tol f
 	aCol := mat64.NewVector(m, nil)
 	move := make([]float64, m)
 	lastCost := math.Inf(1)
-	fmt.Println("Starting simplex for loop")
+	// fmt.Println("Starting simplex for loop")
 	for {
 		// Compute the reduced costs.
 		// r = cn - an^T ab^-T cb
-		tmpMat, err := mat64.Solve(ab.T(), cbVec)
+		var tmpMat mat64.Dense
+		err := tmpMat.Solve(ab.T(), cbVec)
 		//tmpMat := &mat64.Dense{}
 		//err := tmpMat.SolveLU(abLU, true, cbVec)
 		if err != nil {
@@ -350,7 +351,8 @@ func simplex(initialBasic []int, c []float64, A mat64.Matrix, b []float64, tol f
 		tmp2 := ab.Col(nil, replace)
 		an.SetCol(minIdx, tmp2)
 		ab.SetCol(replace, tmp1)
-		xbVec, err := mat64.Solve(ab, bVec)
+		var xbVec mat64.Dense
+		err = xbVec.Solve(ab, bVec)
 		if err != nil {
 			fmt.Println("ab = ", ab)
 			panic("lp: unexpected linear solve error")
@@ -435,8 +437,10 @@ func findNext(move []float64, aCol *mat64.Vector, beale bool, r []float64, tol f
 	// solution.
 	if !beale && r[minIdx] >= -tol {
 		// Found minimum successfully
+		fmt.Println("found successfully")
 		return -1, -1, true, nil
 	}
+	fmt.Println("not found successfully")
 	// Replace the most negative element in the simplex.
 	bHat := xb // ab^-1 b
 	// TODO(btracey): delete this
@@ -450,19 +454,35 @@ func findNext(move []float64, aCol *mat64.Vector, beale bool, r []float64, tol f
 		aCol.SetVec(i, A.At(i, colIdx))
 	}
 	// d = -ab^-1 * A_minidx.
-	dVec, err := mat64.Solve(ab, aCol)
+	var dVec mat64.Dense
+	err = dVec.Solve(ab, aCol)
 	if err != nil {
 		panic("lp: unexpected linear solve error")
 	}
 	d := dVec.Col(nil, 0)
 	floats.Scale(-1, d)
 
+	/*
+		// TODO(btracey): customizable? What value should this be?
+		tolUnbounded := 1e-14
+		for i, v := range d {
+			if v > 0 && v < tolUnbounded {
+				d[i] = 0
+			}
+		}
+	*/
+
 	// If no di < 0, then problem is unbounded.
 	if floats.Min(d) >= 0 {
+		fmt.Printf("abmat =\n%0.4v\n", mat64.Formatted(ab))
+		fmt.Println("ab = ", ab)
+		fmt.Println("aCol = ", aCol)
 		fmt.Println("Unbounded, d =", d)
 		// Problem is unbounded
 		// TODO(btracey): What should we return
 		return -1, -1, false, ErrUnbounded
+	} else {
+		fmt.Println("not unbounded")
 	}
 	for i, v := range d {
 		// Only look at the postive d values
@@ -485,7 +505,8 @@ func isFeasibleSet(basicIdxs []int, A mat64.Matrix, b []float64) (feasible bool,
 		panic("lp: unexpected bad basicIdx length")
 	}
 	aBasic = extractColumns(A, basicIdxs)
-	xbMat, err := mat64.Solve(aBasic, mat64.NewVector(m, b))
+	var xbMat mat64.Dense
+	err := xbMat.Solve(aBasic, mat64.NewVector(m, b))
 	if err != nil {
 		fmt.Println("a basic in isfeasible")
 		fmt.Println("a = ", A)
@@ -523,7 +544,7 @@ func findInitialBasic(A mat64.Matrix, b []float64) ([]int, *mat64.Dense, []float
 		return basicIdxs, aBasic, xb, nil
 	}
 
-	fmt.Println("initbasic not feasible, aBasic = ", aBasic)
+	//fmt.Println("initbasic not feasible, aBasic = ", aBasic)
 
 	// Solve the "Phase I" problem of finding an initial feasible solution.
 	// The Phase I problem can be solved by introducing one additional artificial
@@ -541,7 +562,7 @@ func findInitialBasic(A mat64.Matrix, b []float64) ([]int, *mat64.Dense, []float
 	// if is zero, then optimal basis can be used as initial basis for phase II.
 	//
 	minIdx := floats.MinIdx(xb)
-	fmt.Println("xb = ", xb)
+	// fmt.Println("xb = ", xb)
 	aX1 := make([]float64, m)
 
 	// The x+1^th column of A is b - \sum{i in basicIdxs}a_i + a_j.
@@ -555,11 +576,13 @@ func findInitialBasic(A mat64.Matrix, b []float64) ([]int, *mat64.Dense, []float
 			aX1[i] -= A.At(i, v)
 		}
 	}
-	fmt.Println("a =")
-	fmt.Println(mat64.Formatted(A))
-	fmt.Println("b = ")
-	fmt.Println(b)
-	fmt.Println("ax1 =", aX1)
+	/*
+		fmt.Println("a =")
+		fmt.Println(mat64.Formatted(A))
+		fmt.Println("b = ")
+		fmt.Println(b)
+		fmt.Println("ax1 =", aX1)
+	*/
 	aNew := mat64.NewDense(m, n+1, nil)
 	aNew.Copy(A)
 	aNew.SetCol(n, aX1)
@@ -573,7 +596,7 @@ func findInitialBasic(A mat64.Matrix, b []float64) ([]int, *mat64.Dense, []float
 
 	// TODO(btracey): It is possible due to floating point noise that this
 	// new matrix is singular.
-	fmt.Println("asharp det ", mat64.Det(aSharp))
+	// fmt.Println("asharp det ", mat64.Det(aSharp))
 
 	var tmpSharp mat64.Vector
 	ones := mat64.NewVector(m, nil)
@@ -587,12 +610,15 @@ func findInitialBasic(A mat64.Matrix, b []float64) ([]int, *mat64.Dense, []float
 
 	// Solve this linear program
 	fmt.Println("Starting Phase 1")
-	fmt.Println("aNew = ")
-	fmt.Println(mat64.Formatted(aNew))
-	fmt.Println("b = ")
-	fmt.Println(b)
+	/*
+		fmt.Println("aNew = ")
+		fmt.Println(mat64.Formatted(aNew))
+		fmt.Println("b = ")
+		fmt.Println(b)
+	*/
 	_, xOpt, newBasic, err := simplex(basicIdxs, c, aNew, b, 1e-14)
-	fmt.Println("Done Phase 1")
+	//fmt.Println("Done Phase 1")
+
 	if err != nil {
 		panic("Phase 1 problem errored: " + err.Error())
 		return nil, nil, nil, errors.New(fmt.Sprintf("lp: error finding feasible basis: %s", err))
@@ -624,7 +650,8 @@ func linearlyDependent(vec *mat64.Vector, A mat64.Matrix, tol float64) bool {
 	// it is independent.
 	_, n := A.Dims()
 	// TODO(btracey): Replace when we have vector.Solve()
-	wHatMat, err := mat64.Solve(A, vec)
+	var wHatMat mat64.Dense
+	err := wHatMat.Solve(A, vec)
 	if err != nil {
 		// Solve can only fail if C is not of full rank. We have been
 		// careful to only add linearly independent columns, so it should
