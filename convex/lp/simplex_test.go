@@ -27,16 +27,23 @@ func TestSimplex(t *testing.T) {
 		//initialBasic []int
 		tol float64
 	}{
+		/*
+			{
+				// Basic feasible LP
+				A: mat64.NewDense(2, 4, []float64{
+					-1, 2, 1, 0,
+					3, 1, 0, 1,
+				}),
+				b: []float64{4, 9},
+				c: []float64{-1, -2, 0, 0},
+				//initialBasic: nil,
+				tol: 0,
+			},
+		*/
 		{
-			// Basic feasible LP
-			A: mat64.NewDense(2, 4, []float64{
-				-1, 2, 1, 0,
-				3, 1, 0, 1,
-			}),
-			b: []float64{4, 9},
-			c: []float64{-1, -2, 0, 0},
-			//initialBasic: nil,
-			tol: 0,
+			A: mat64.NewDense(3, 5, []float64{0.09917822373225804, 0, 0, -0.2588175087223661, -0.5935518220870567, 1.301111422556007, 0.12220247487326946, 0, 0, -1.9194869979254463, 0, 0, 0, 0, -0.8588221231396473}),
+			b: []float64{0, 0, 0},
+			c: []float64{0, 0.598992624019304, 0, 0, 0},
 		},
 	} {
 		//simplex(test.initialBasic, test.c, test.A, test.b, test.tol)

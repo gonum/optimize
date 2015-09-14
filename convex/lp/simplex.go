@@ -160,6 +160,8 @@ const linDepTol = 1e-10
 // is there, etc.
 // TODO(btracey): Export this function.
 // TODO(btracey): Need to improve error handling. Only want to panic if condition number inf.
+// TODO(btracey): Instead of simplex solve, there should be a "Reduced ab" where
+// the rows of a that are all zero are removed
 // For a detailed description of the Simplex method please see lectures 11-13 of
 // UC Math 352 https://www.youtube.com/watch?v=ESzYPFkY3og&index=11&list=PLh464gFUoJWOmBYla3zbZbc4nv2AXez6X .
 //
@@ -202,6 +204,9 @@ func simplex(initialBasic []int, c []float64, A mat64.Matrix, b []float64, tol f
 	if len(b) != m {
 		panic("lp: b vector incorrect length")
 	}
+	fmt.Printf("a orig format\n% 0.4v\n", mat64.Formatted(A))
+	fmt.Println("a orig = ", A)
+	fmt.Println("b orig = ", b)
 	fmt.Println("c orig = ", c)
 	/*
 		isZero := true
@@ -220,6 +225,21 @@ func simplex(initialBasic []int, c []float64, A mat64.Matrix, b []float64, tol f
 	}
 	if len(initialBasic) != 0 && len(initialBasic) != m {
 		panic("lp: initialBasic incorrect length")
+	}
+	// Check that if a row only has zero elements that the b vector is zero, othewise
+	// infeasible
+	for i := 0; i < m; i++ {
+		isZero := true
+		for j := 0; j < n; j++ {
+			if A.At(i, j) != 0 {
+				isZero = false
+				break
+			}
+		}
+		if isZero && b[i] != 0 {
+			// Infeasible
+			return math.NaN(), nil, nil, ErrInfeasible
+		}
 	}
 
 	// Check that if a column only has zero elements that the respective C vector
@@ -265,6 +285,10 @@ func simplex(initialBasic []int, c []float64, A mat64.Matrix, b []float64, tol f
 		basicIdxs = make([]int, len(initialBasic))
 		copy(basicIdxs, initialBasic)
 	}
+
+	fmt.Println("at start")
+	fmt.Println("ab = ", ab)
+	fmt.Println("xb = ", xb)
 
 	// Verify sizes
 	// TODO(btracey): remove when we're sure the code is correct.
@@ -324,9 +348,9 @@ func simplex(initialBasic []int, c []float64, A mat64.Matrix, b []float64, tol f
 		// Compute the reduced costs.
 		// r = cn - an^T ab^-T cb
 		var tmpMat mat64.Dense
-		err := tmpMat.Solve(ab.T(), cbVec)
-		//tmpMat := &mat64.Dense{}
-		//err := tmpMat.SolveLU(abLU, true, cbVec)
+		//err := tmpMat.Solve(ab.T(), cbVec)
+		abt := mat64.DenseCopyOf(ab.T())
+		err := simplexSolve(&tmpMat, abt, cbVec)
 		if err != nil {
 			panic("lp: unexpected linear solve error")
 		}
@@ -338,6 +362,9 @@ func simplex(initialBasic []int, c []float64, A mat64.Matrix, b []float64, tol f
 		beale := false
 		var minIdx, replace int
 		var done bool
+		fmt.Println("r = ", r)
+		fmt.Println("move =", move)
+		fmt.Println("ab = ", ab)
 		minIdx, replace, done, err = findNext(move, aCol, beale, r, tol, ab, xb, nonBasicIdx, A)
 		if done {
 			break
@@ -362,6 +389,11 @@ func simplex(initialBasic []int, c []float64, A mat64.Matrix, b []float64, tol f
 			if err != nil {
 				return math.Inf(-1), nil, nil, err
 			}
+			/*
+				if move[replace] == 0 {
+					panic("lp: move still zero")
+				}
+			*/
 		}
 		basicIdxs[replace], nonBasicIdx[minIdx] = nonBasicIdx[minIdx], basicIdxs[replace]
 		cb[replace], cn[minIdx] = cn[minIdx], cb[replace]
@@ -371,7 +403,8 @@ func simplex(initialBasic []int, c []float64, A mat64.Matrix, b []float64, tol f
 		an.SetCol(minIdx, tmp2)
 		ab.SetCol(replace, tmp1)
 		var xbVec mat64.Dense
-		err = xbVec.Solve(ab, bVec)
+		//err = xbVec.Solve(ab, bVec)
+		err = simplexSolve(&xbVec, ab, bVec)
 		if err != nil {
 			fmt.Println("err = ", err)
 			fmt.Println("ab = ", ab)
@@ -475,6 +508,8 @@ func findNext(move []float64, aCol *mat64.Vector, beale bool, r []float64, tol f
 	fmt.Println("not found successfully")
 	// Replace the most negative element in the simplex.
 	bHat := xb // ab^-1 b
+	fmt.Println("bhat = ", bHat)
+	fmt.Println(ab)
 	// TODO(btracey): delete this
 	//bHat2, err := mat64.Solve(ab, mat64.NewVector(len(b), b))
 	//if err != nil {
@@ -769,6 +804,63 @@ func extractColumns(A mat64.Matrix, cols []int) *mat64.Dense {
 		}
 	}
 	return sub
+}
+
+// simplexSolve solves but being protective of all zero rows
+func simplexSolve(x, a *mat64.Dense, b *mat64.Vector) error {
+	m, n := a.Dims()
+	allzero := make(map[int]struct{})
+	for i := 0; i < m; i++ {
+		if b.At(i, 0) == 0 {
+			isZero := true
+			for j := 0; j < n; j++ {
+				v := a.At(i, j)
+				if v != 0 {
+					isZero = false
+					break
+				}
+			}
+			if isZero {
+				allzero[i] = struct{}{}
+			}
+		}
+	}
+	var aNew *mat64.Dense
+	var bNew *mat64.Vector
+	row := make([]float64, n)
+	if len(allzero) == 0 {
+		aNew = a
+		bNew = b
+	} else {
+		mNew := m - len(allzero)
+		aNew = mat64.NewDense(mNew, n, nil)
+		bNew = mat64.NewVector(mNew, nil)
+		var count int
+		for i := 0; i < m; i++ {
+			_, zero := allzero[i]
+			if !zero {
+				a.Row(row, i)
+				aNew.SetRow(count, row)
+				bNew.SetVec(count, b.At(i, 0))
+				count++
+			}
+		}
+	}
+
+	// HERE: The problem is when one of the swaps makes all of the elements zore.
+	// We also need to look at getting rid of the zero columns. Tricky because
+	// then have a lsq rather than a normal solve.
+	/*
+		// See if any of the columns are all zero. If so, just make the corresponding x zero.
+		colZero := make
+		for j := 0; j < n; j++ {
+			isZero := true
+		}
+	*/
+
+	fmt.Println("anew = ", aNew)
+	fmt.Println("bnew = ", bNew)
+	return x.Solve(aNew, bNew)
 }
 
 // Finding basic feasible solution -- "Phase 1 problem"
