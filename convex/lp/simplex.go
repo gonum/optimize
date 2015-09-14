@@ -156,7 +156,10 @@ const linDepTol = 1e-10
 // A must have full rank.
 // TODO(btracey): Have some sort of preprocessing step for helping to fix A to make it
 // full rank?
+// TODO(btracey): Reduce rows? Get rid of all zeros, places where only one variable
+// is there, etc.
 // TODO(btracey): Export this function.
+// TODO(btracey): Need to improve error handling. Only want to panic if condition number inf.
 // For a detailed description of the Simplex method please see lectures 11-13 of
 // UC Math 352 https://www.youtube.com/watch?v=ESzYPFkY3og&index=11&list=PLh464gFUoJWOmBYla3zbZbc4nv2AXez6X .
 //
@@ -198,6 +201,22 @@ func simplex(initialBasic []int, c []float64, A mat64.Matrix, b []float64, tol f
 	}
 	if len(b) != m {
 		panic("lp: b vector incorrect length")
+	}
+	fmt.Println("c orig = ", c)
+	/*
+		isZero := true
+		for _, v := range c {
+			if v != 0 {
+				isZero = false
+			}
+		}
+		if isZero {
+			// c all zeros. Need to find an initial basic
+			//return 0, make([]float64, , nil, nil
+		}
+	*/
+	if len(c) != n {
+		panic("lp: c vector incorrect length")
 	}
 	if len(initialBasic) != 0 && len(initialBasic) != m {
 		panic("lp: initialBasic incorrect length")
@@ -354,6 +373,7 @@ func simplex(initialBasic []int, c []float64, A mat64.Matrix, b []float64, tol f
 		var xbVec mat64.Dense
 		err = xbVec.Solve(ab, bVec)
 		if err != nil {
+			fmt.Println("err = ", err)
 			fmt.Println("ab = ", ab)
 			panic("lp: unexpected linear solve error")
 		}
@@ -422,12 +442,24 @@ func findNext(move []float64, aCol *mat64.Vector, beale bool, r []float64, tol f
 	m, _ := A.Dims()
 	// Find the element with the minimum reduced cost.
 	if beale {
+		fmt.Println("in beale")
+		fmt.Println("r = ", r)
 		// Find the first negative entry of r.
+		// TODO(btracey): Is there a way to communicate entries that are supposed
+		// to be zero? Should we round all numbers below a tol to zero.
+		// Don't overload the solution tolerance with floating point error
+		// tolerance.
+		var found bool
 		for i, v := range r {
-			if v < 0 {
+			negTol := 1e-14
+			if v < -negTol {
 				minIdx = i
+				found = true
 				break
 			}
+		}
+		if !found {
+			panic("lp: no negative argument found")
 		}
 	} else {
 		minIdx = floats.MinIdx(r)
@@ -482,7 +514,7 @@ func findNext(move []float64, aCol *mat64.Vector, beale bool, r []float64, tol f
 		// TODO(btracey): What should we return
 		return -1, -1, false, ErrUnbounded
 	} else {
-		fmt.Println("not unbounded")
+		// fmt.Println("not unbounded")
 	}
 	for i, v := range d {
 		// Only look at the postive d values
@@ -610,12 +642,17 @@ func findInitialBasic(A mat64.Matrix, b []float64) ([]int, *mat64.Dense, []float
 
 	// Solve this linear program
 	fmt.Println("Starting Phase 1")
-	/*
-		fmt.Println("aNew = ")
-		fmt.Println(mat64.Formatted(aNew))
-		fmt.Println("b = ")
-		fmt.Println(b)
-	*/
+	fmt.Println("basic indexes", basicIdxs)
+	fmt.Println("a orig")
+	fmt.Printf("% 0.4v\n", mat64.Formatted(A))
+	fmt.Println("a = ", A)
+	fmt.Println("b orig", b)
+	fmt.Println("aNew = ")
+	fmt.Printf("% 0.4v\n", mat64.Formatted(aNew))
+	fmt.Println("b = ")
+	fmt.Println(b)
+	fmt.Println("c = ", c)
+
 	_, xOpt, newBasic, err := simplex(basicIdxs, c, aNew, b, 1e-14)
 	//fmt.Println("Done Phase 1")
 

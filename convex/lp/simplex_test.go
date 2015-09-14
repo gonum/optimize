@@ -44,7 +44,7 @@ func TestSimplex(t *testing.T) {
 	}
 
 	// Try a bunch of random LPs
-	nTest := 100000
+	nTest := 1000000
 	infeasible := 0
 	unbounded := 0
 	bounded := 0
@@ -76,6 +76,7 @@ func TestSimplex(t *testing.T) {
 		for i := range b {
 			b[i] = randValue()
 		}
+
 		c := make([]float64, n)
 		for i := range c {
 			c[i] = randValue()
@@ -111,7 +112,9 @@ func TestSimplex(t *testing.T) {
 }
 
 func testSimplex(t *testing.T, c []float64, a mat64.Matrix, b []float64, convergenceTol float64) error {
+	fmt.Println("Starting primal simplex")
 	primalOpt, primalX, _, errPrimal := simplex(nil, c, a, b, convergenceTol)
+	fmt.Println("Done primal simplex")
 
 	if errPrimal == nil {
 		// Check that it's feasible
@@ -140,7 +143,7 @@ func testSimplex(t *testing.T, c []float64, a mat64.Matrix, b []float64, converg
 	// Otherwise, compare the answer to its dual.
 
 	// Construct and solve the dual LP.
-	// Standard form:
+	// Standard Frm:
 	//  minimize c^T * x
 	//    subject to  A * x = b, x >= 0
 	// The dual of this problem is
@@ -154,7 +157,10 @@ func testSimplex(t *testing.T, c []float64, a mat64.Matrix, b []float64, converg
 	negAT.Clone(a.T())
 	negAT.Scale(-1, negAT)
 	cNew, aNew, bNew := Convert(b, negAT, c, nil, nil)
+
+	fmt.Println("Starting dual simplex")
 	dualOpt, dualX, _, errDual := simplex(nil, cNew, aNew, bNew, convergenceTol)
+	fmt.Println("Done dual simplex")
 	if errDual == nil {
 		// Check that the dual is feasible
 		var bCheck mat64.Vector
