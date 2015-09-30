@@ -482,6 +482,9 @@ func findNext(move []float64, aCol *mat64.Vector, beale bool, r []float64, tol f
 		// to be zero? Should we round all numbers below a tol to zero.
 		// Don't overload the solution tolerance with floating point error
 		// tolerance.
+
+		// TODO(btracey); Should only replace if the swapped row keeps aCol
+		// full rank.
 		var found bool
 		for i, v := range r {
 			negTol := 1e-14
