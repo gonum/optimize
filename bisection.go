@@ -6,7 +6,6 @@ package optimize
 
 import (
 	"math"
-	"os"
 
 	"github.com/gonum/floats"
 )
@@ -32,7 +31,6 @@ type Bisection struct {
 	maxStep  float64
 	currStep float64
 
-	initF float64
 	minF  float64
 	maxF  float64
 	lastF float64
@@ -66,7 +64,6 @@ func (b *Bisection) Init(f, g float64, step float64) Operation {
 	b.maxStep = math.Inf(1)
 	b.currStep = step
 
-	b.initF = f
 	b.minF = f
 	b.maxF = math.NaN()
 
@@ -81,18 +78,15 @@ func (b *Bisection) Iterate(f, g float64) (Operation, float64, error) {
 	if b.lastOp != FuncEvaluation && b.lastOp != GradEvaluation {
 		panic("bisection: Init has not been called")
 	}
-	minF := b.initF
+	minF := b.minF
 	if b.maxF < minF {
 		minF = b.maxF
-	}
-	if b.minF < minF {
-		minF = b.minF
 	}
 	if b.lastOp == FuncEvaluation {
 		// See if the function value is good enough to make progress. If it is,
 		// evaluate the gradient. If not, set it to the upper bound if the bound
 		// has not yet been found, otherwise iterate toward the minimum location.
-		if f <= b.minF || floats.EqualWithinAbsOrRel(f, b.minF, b.eqTol, b.eqTol) {
+		if f <= b.minF || floats.EqualWithinAbsOrRel(f, minF, b.eqTol, b.eqTol) {
 			b.lastF = f
 			b.lastOp = GradEvaluation
 			return b.lastOp, b.currStep, nil
@@ -129,7 +123,7 @@ func (b *Bisection) Iterate(f, g float64) (Operation, float64, error) {
 		}
 		b.minStep = b.currStep
 		b.minF = f
-		return b.nextStep(b.currStep * (2 + 1e-6))
+		return b.nextStep(b.currStep * 2)
 	}
 	// The interval has been bounded, and we have found a new lowest value. Use
 	// the gradient to decide which direction.
@@ -150,7 +144,6 @@ func (b *Bisection) Iterate(f, g float64) (Operation, float64, error) {
 // are the same, it returns an error.
 func (b *Bisection) nextStep(step float64) (Operation, float64, error) {
 	if b.currStep == step {
-		os.Exit(1)
 		b.lastOp = NoOperation
 		return b.lastOp, b.currStep, ErrLinesearcherFailure
 	}
