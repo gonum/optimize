@@ -4,15 +4,30 @@
 
 package optimize
 
-import "math"
+import (
+	"math"
+	"os"
+
+	"github.com/gonum/floats"
+)
 
 // Bisection is a Linesearcher that uses a bisection to find a point that
 // satisfies the strong Wolfe conditions with the given gradient constant and
 // function constant of zero. If GradConst is zero, it will be set to a reasonable
 // value. Bisection will panic if GradConst is not between zero and one.
+// EqTol is used to smooth out floating point noise when testing the Wolfe
+// conditions. The Wolfe condition will be considered met if the function value
+// is less than or within a tolerance of the starting value of the line
+// search. If EqTol is zero, it will be defaulted to 1e-10, and if it is negative
+// a strict less than or equal to comparison will be used. A larger value of eqTol
+// will be more robust to numeric fluctuations but will miss real purturbations
+// in the objective function while a smaller value of eqTol will be more sensative
+// to numeric fluctuations but is more likely to result in ErrLinesearcherFailure.
 type Bisection struct {
 	GradConst float64
+	EqTol     float64
 
+	eqTol    float64
 	minStep  float64
 	maxStep  float64
 	currStep float64
@@ -22,7 +37,7 @@ type Bisection struct {
 	maxF  float64
 	lastF float64
 
-	initGrad float64
+	absInitGrad float64
 
 	lastOp Operation
 }
@@ -41,6 +56,11 @@ func (b *Bisection) Init(f, g float64, step float64) Operation {
 	if b.GradConst <= 0 || b.GradConst >= 1 {
 		panic("bisection: GradConst not between 0 and 1")
 	}
+	if b.EqTol == 0 {
+		b.eqTol = 1e-10
+	} else if b.EqTol < 0 {
+		b.eqTol = 0
+	}
 
 	b.minStep = 0
 	b.maxStep = math.Inf(1)
@@ -50,7 +70,7 @@ func (b *Bisection) Init(f, g float64, step float64) Operation {
 	b.minF = f
 	b.maxF = math.NaN()
 
-	b.initGrad = g
+	b.absInitGrad = math.Abs(g)
 
 	// Only evaluate the gradient when necessary.
 	b.lastOp = FuncEvaluation
@@ -72,7 +92,7 @@ func (b *Bisection) Iterate(f, g float64) (Operation, float64, error) {
 		// See if the function value is good enough to make progress. If it is,
 		// evaluate the gradient. If not, set it to the upper bound if the bound
 		// has not yet been found, otherwise iterate toward the minimum location.
-		if f <= b.minF {
+		if f <= b.minF || floats.EqualWithinAbsOrRel(f, b.minF, b.eqTol, b.eqTol) {
 			b.lastF = f
 			b.lastOp = GradEvaluation
 			return b.lastOp, b.currStep, nil
@@ -94,7 +114,7 @@ func (b *Bisection) Iterate(f, g float64) (Operation, float64, error) {
 	f = b.lastF
 	// The function value was lower. Check if this location is sufficient to
 	// converge the linesearch, otherwise iterate.
-	if StrongWolfeConditionsMet(f, g, minF, b.initGrad, b.currStep, 0, b.GradConst) {
+	if math.Abs(g) < b.GradConst*b.absInitGrad {
 		b.lastOp = MajorIteration
 		return b.lastOp, b.currStep, nil
 	}
@@ -109,7 +129,7 @@ func (b *Bisection) Iterate(f, g float64) (Operation, float64, error) {
 		}
 		b.minStep = b.currStep
 		b.minF = f
-		return b.nextStep(b.currStep * 2)
+		return b.nextStep(b.currStep * (2 + 1e-6))
 	}
 	// The interval has been bounded, and we have found a new lowest value. Use
 	// the gradient to decide which direction.
@@ -130,6 +150,7 @@ func (b *Bisection) Iterate(f, g float64) (Operation, float64, error) {
 // are the same, it returns an error.
 func (b *Bisection) nextStep(step float64) (Operation, float64, error) {
 	if b.currStep == step {
+		os.Exit(1)
 		b.lastOp = NoOperation
 		return b.lastOp, b.currStep, ErrLinesearcherFailure
 	}
