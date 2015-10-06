@@ -135,6 +135,7 @@ var (
 	ErrLinSolve   = errors.New("lp: unexpected linear solve failure")
 	ErrUnbounded  = errors.New("lp: problem is unbounded")
 	ErrSingular   = errors.New("lp: A is singular")
+	ErrZeroColumn = errors.New("lp: err zero column")
 )
 
 var (
@@ -193,8 +194,8 @@ func simplex(initialBasic []int, c []float64, A mat64.Matrix, b []float64, tol f
 	// basic solution. The initial basic solution should be feasible and contain
 	// a set of linearly independent columns of A.
 
-	//fmt.Println("a =", A)
-	//fmt.Println("b =", b)
+	// fmt.Println("a =", A)
+	// fmt.Println("b =", b)
 	//fmt.Println("c = ", c)
 
 	m, n := A.Dims()
@@ -204,10 +205,12 @@ func simplex(initialBasic []int, c []float64, A mat64.Matrix, b []float64, tol f
 	if len(b) != m {
 		panic("lp: b vector incorrect length")
 	}
-	fmt.Printf("a orig format\n% 0.4v\n", mat64.Formatted(A))
-	fmt.Println("a orig = ", A)
-	fmt.Println("b orig = ", b)
-	fmt.Println("c orig = ", c)
+	/*
+		fmt.Printf("a orig format\n% 0.4v\n", mat64.Formatted(A))
+		fmt.Println("a orig = ", A)
+		fmt.Printf("b orig %#v\n", b)
+		fmt.Printf("c orig %#v\n ", c)
+	*/
 	/*
 		isZero := true
 		for _, v := range c {
@@ -243,7 +246,9 @@ func simplex(initialBasic []int, c []float64, A mat64.Matrix, b []float64, tol f
 	}
 
 	// Check that if a column only has zero elements that the respective C vector
-	// is positive (otherwise unbounded).
+	// is positive (otherwise unbounded). Otherwise return ErrZeroRow as this
+	// breaks update rules.
+	// TODO(btracey): Fix algorithm to deal with this case
 	for j := 0; j < n; j++ {
 		isZero := true
 		for i := 0; i < m; i++ {
@@ -255,6 +260,8 @@ func simplex(initialBasic []int, c []float64, A mat64.Matrix, b []float64, tol f
 		if isZero && c[j] < 0 {
 			// fmt.Println("Unbounded for zero row")
 			return math.Inf(-1), nil, nil, ErrUnbounded
+		} else if isZero {
+			return math.NaN(), nil, nil, ErrZeroColumn
 		}
 	}
 
@@ -286,9 +293,9 @@ func simplex(initialBasic []int, c []float64, A mat64.Matrix, b []float64, tol f
 		copy(basicIdxs, initialBasic)
 	}
 
-	fmt.Println("at start")
-	fmt.Println("ab = ", ab)
-	fmt.Println("xb = ", xb)
+	// fmt.Println("at start")
+	// fmt.Println("ab = ", ab)
+	// fmt.Println("xb = ", xb)
 
 	// Verify sizes
 	// TODO(btracey): remove when we're sure the code is correct.
@@ -345,27 +352,32 @@ func simplex(initialBasic []int, c []float64, A mat64.Matrix, b []float64, tol f
 	lastCost := math.Inf(1)
 	// fmt.Println("Starting simplex for loop")
 	for {
+		fmt.Println(basicIdxs)
 		// Compute the reduced costs.
 		// r = cn - an^T ab^-T cb
 		var tmpMat mat64.Dense
-		//err := tmpMat.Solve(ab.T(), cbVec)
-		abt := mat64.DenseCopyOf(ab.T())
-		err := simplexSolve(&tmpMat, abt, cbVec)
+		err := tmpMat.Solve(ab.T(), cbVec)
+		//abt := mat64.DenseCopyOf(ab.T())
+		//err := simplexSolve(&tmpMat, abt, cbVec)
 		if err != nil {
+			fmt.Println("ab^T = ", ab)
+			fmt.Println("err = ", err)
 			panic("lp: unexpected linear solve error")
 		}
-		tmpVec2 := mat64.NewVector(m, tmpMat.Col(nil, 0))
+		tmpVec2 := mat64.NewVector(m, mat64.Col(nil, 0, &tmpMat))
+		//tmpVec2 := mat64.NewVector(m, mat64.Col(nil, 0, tmpMat))
 		tmpVec := mat64.NewVector(n-m, nil)
 		tmpVec.MulVec(an.T(), tmpVec2)
 		floats.SubTo(r, cn, tmpVec.RawVector().Data)
 
-		beale := false
+		bland := false
 		var minIdx, replace int
 		var done bool
-		fmt.Println("r = ", r)
-		fmt.Println("move =", move)
-		fmt.Println("ab = ", ab)
-		minIdx, replace, done, err = findNext(move, aCol, beale, r, tol, ab, xb, nonBasicIdx, A)
+		// fmt.Println("r = ", r)
+		// fmt.Println("move =", move)
+		// fmt.Println("ab = ", ab)
+		// fmt.Println("nonbasic = ", nonBasicIdx)
+		minIdx, replace, done, err = findNext(move, aCol, bland, r, tol, ab, xb, nonBasicIdx, A)
 		if done {
 			break
 		}
@@ -380,8 +392,8 @@ func simplex(initialBasic []int, c []float64, A mat64.Matrix, b []float64, tol f
 			// smallest index of r that is negative. Then recompute move, and then
 			// take the smallest variable in the index of move. Needs to be smallest
 			// index as per row of A.
-			beale := true
-			minIdx, replace, done, err = findNext(move, aCol, beale, r, tol, ab, xb, nonBasicIdx, A)
+			bland := true
+			minIdx, replace, done, err = findNext(move, aCol, bland, r, tol, ab, xb, nonBasicIdx, A)
 			// Shouldn't be done or err here
 			if done {
 				panic("lp: bad done")
@@ -398,19 +410,22 @@ func simplex(initialBasic []int, c []float64, A mat64.Matrix, b []float64, tol f
 		basicIdxs[replace], nonBasicIdx[minIdx] = nonBasicIdx[minIdx], basicIdxs[replace]
 		cb[replace], cn[minIdx] = cn[minIdx], cb[replace]
 		// Replace columns as well
-		tmp1 := an.Col(nil, minIdx)
-		tmp2 := ab.Col(nil, replace)
+		tmp1 := mat64.Col(nil, minIdx, an)
+		tmp2 := mat64.Col(nil, replace, ab)
+		//tmp1 := an.Col(nil, minIdx)
+		//tmp2 := ab.Col(nil, replace)
 		an.SetCol(minIdx, tmp2)
 		ab.SetCol(replace, tmp1)
 		var xbVec mat64.Dense
-		//err = xbVec.Solve(ab, bVec)
-		err = simplexSolve(&xbVec, ab, bVec)
+		err = xbVec.Solve(ab, bVec)
+		//err = simplexSolve(&xbVec, ab, bVec)
 		if err != nil {
+			//fmt.Println("ab = ", ab)
 			fmt.Println("err = ", err)
-			fmt.Println("ab = ", ab)
 			panic("lp: unexpected linear solve error")
 		}
-		xbVec.Col(xb, 0)
+		//xbVec.Col(xb, 0)
+		mat64.Col(xb, 0, &xbVec)
 		cost := floats.Dot(cb, xb)
 		if cost-lastCost > 1e-10 {
 			fmt.Println("cost = ", cost)
@@ -471,12 +486,10 @@ func simplex(initialBasic []int, c []float64, A mat64.Matrix, b []float64, tol f
 }
 
 // move stored in place
-func findNext(move []float64, aCol *mat64.Vector, beale bool, r []float64, tol float64, ab *mat64.Dense, xb []float64, nonBasicIdx []int, A mat64.Matrix) (minIdx, replace int, done bool, err error) {
+func findNext(move []float64, aCol *mat64.Vector, bland bool, r []float64, tol float64, ab *mat64.Dense, xb []float64, nonBasicIdx []int, A mat64.Matrix) (minIdx, replace int, done bool, err error) {
 	m, _ := A.Dims()
 	// Find the element with the minimum reduced cost.
-	if beale {
-		fmt.Println("in beale")
-		fmt.Println("r = ", r)
+	if bland {
 		// Find the first negative entry of r.
 		// TODO(btracey): Is there a way to communicate entries that are supposed
 		// to be zero? Should we round all numbers below a tol to zero.
@@ -488,36 +501,34 @@ func findNext(move []float64, aCol *mat64.Vector, beale bool, r []float64, tol f
 		var found bool
 		for i, v := range r {
 			negTol := 1e-14
+			// Zero column can cause this replacement to be singular. Correct
+			// replacing may be able to deal with that issue.
 			if v < -negTol {
 				minIdx = i
 				found = true
 				break
 			}
+
 		}
 		if !found {
-			panic("lp: no negative argument found")
+			panic("lp beale: no negative argument found")
 		}
 	} else {
+		// Replace the most negative element in the simplex.
 		minIdx = floats.MinIdx(r)
 	}
 
 	// If there are no negative entries, then we have found an optimal
 	// solution.
-	if !beale && r[minIdx] >= -tol {
+	if !bland && r[minIdx] >= -tol {
 		// Found minimum successfully
-		fmt.Println("found successfully")
+		// fmt.Println("found successfully")
 		return -1, -1, true, nil
 	}
-	fmt.Println("not found successfully")
-	// Replace the most negative element in the simplex.
+	// fmt.Println("not found successfully")
 	bHat := xb // ab^-1 b
-	fmt.Println("bhat = ", bHat)
-	fmt.Println(ab)
-	// TODO(btracey): delete this
-	//bHat2, err := mat64.Solve(ab, mat64.NewVector(len(b), b))
-	//if err != nil {
-	//	panic("unexpected linear solve error")
-	//}
+	// fmt.Println("bhat = ", bHat)
+	// fmt.Println(ab)
 	colIdx := nonBasicIdx[minIdx]
 	// TODO(btracey): Can make this a column view.
 	for i := 0; i < m; i++ {
@@ -529,25 +540,16 @@ func findNext(move []float64, aCol *mat64.Vector, beale bool, r []float64, tol f
 	if err != nil {
 		panic("lp: unexpected linear solve error")
 	}
-	d := dVec.Col(nil, 0)
+	d := mat64.Col(nil, 0, &dVec)
+	//d := dVec.Col(nil, 0)
 	floats.Scale(-1, d)
-
-	/*
-		// TODO(btracey): customizable? What value should this be?
-		tolUnbounded := 1e-14
-		for i, v := range d {
-			if v > 0 && v < tolUnbounded {
-				d[i] = 0
-			}
-		}
-	*/
 
 	// If no di < 0, then problem is unbounded.
 	if floats.Min(d) >= 0 {
-		fmt.Printf("abmat =\n%0.4v\n", mat64.Formatted(ab))
-		fmt.Println("ab = ", ab)
-		fmt.Println("aCol = ", aCol)
-		fmt.Println("Unbounded, d =", d)
+		// fmt.Printf("abmat =\n%0.4v\n", mat64.Formatted(ab))
+		// fmt.Println("ab = ", ab)
+		// fmt.Println("aCol = ", aCol)
+		// fmt.Println("Unbounded, d =", d)
 		// Problem is unbounded
 		// TODO(btracey): What should we return
 		return -1, -1, false, ErrUnbounded
@@ -565,6 +567,28 @@ func findNext(move []float64, aCol *mat64.Vector, beale bool, r []float64, tol f
 	// Replace the smallest movement in the basis.
 	replace = floats.MinIdx(move)
 	return minIdx, replace, false, nil
+}
+
+// testReplaceColumn sees if repla
+func replaceSingular(m int, xb []float64, minIdx int, nonBasicIdx []int, aCol *mat64.Vector, ab *mat64.Dense, A mat64.Matrix) (ok bool) {
+	//bHat := xb // ab^-1 b
+	bHat := make([]float64, len(xb))
+	copy(bHat, xb)
+	rac, _ := aCol.Dims()
+	aColCopy := mat64.NewVector(rac, nil)
+	aColCopy.CopyVec(aCol)
+	colIdx := nonBasicIdx[minIdx]
+	// TODO(btracey): Can make this a column view.
+	for i := 0; i < m; i++ {
+		aColCopy.SetVec(i, A.At(i, colIdx))
+	}
+	// d = -ab^-1 * A_minidx.
+	var dVec mat64.Dense
+	err := dVec.Solve(ab, aCol)
+	if err != nil {
+		return false
+	}
+	return true
 }
 
 // isFeasibleSet tests if the basicIdxs are a feasible set.
@@ -585,7 +609,8 @@ func isFeasibleSet(basicIdxs []int, A mat64.Matrix, b []float64) (feasible bool,
 		// were linearly independent.
 		panic("lp: unexpected linear solve error")
 	}
-	xb = xbMat.Col(nil, 0)
+	xb = mat64.Col(nil, 0, &xbMat)
+	//xb = xbMat.Col(nil, 0)
 
 	allPos := true
 	// If xb are all positive then we already have an initial feasible set.
@@ -679,17 +704,19 @@ func findInitialBasic(A mat64.Matrix, b []float64) ([]int, *mat64.Dense, []float
 	}
 
 	// Solve this linear program
-	fmt.Println("Starting Phase 1")
-	fmt.Println("basic indexes", basicIdxs)
-	fmt.Println("a orig")
-	fmt.Printf("% 0.4v\n", mat64.Formatted(A))
-	fmt.Println("a = ", A)
-	fmt.Println("b orig", b)
-	fmt.Println("aNew = ")
-	fmt.Printf("% 0.4v\n", mat64.Formatted(aNew))
-	fmt.Println("b = ")
-	fmt.Println(b)
-	fmt.Println("c = ", c)
+	/*
+		fmt.Println("Starting Phase 1")
+		fmt.Println("basic indexes", basicIdxs)
+		fmt.Println("a orig")
+		fmt.Printf("% 0.4v\n", mat64.Formatted(A))
+		fmt.Println("a = ", A)
+		fmt.Println("b orig", b)
+		fmt.Println("aNew = ")
+		fmt.Printf("% 0.4v\n", mat64.Formatted(aNew))
+		fmt.Println("b = ")
+		fmt.Println(b)
+		fmt.Println("c = ", c)
+	*/
 
 	_, xOpt, newBasic, err := simplex(basicIdxs, c, aNew, b, 1e-14)
 	//fmt.Println("Done Phase 1")
@@ -745,7 +772,8 @@ func linearlyDependent(vec *mat64.Vector, A mat64.Matrix, tol float64) bool {
 	if vec.Len() != test.Len() {
 		panic("lp: bad size")
 	}
-	return test.EqualsApproxVec(vec, linDepTol)
+	//return test.EqualsApproxVec(vec, linDepTol)
+	return mat64.EqualApprox(&test, vec, linDepTol)
 }
 
 // findLinearlyIndependnt finds a set of linearly independent columns of A, and
@@ -842,7 +870,8 @@ func simplexSolve(x, a *mat64.Dense, b *mat64.Vector) error {
 		for i := 0; i < m; i++ {
 			_, zero := allzero[i]
 			if !zero {
-				a.Row(row, i)
+				//a.Row(row, i)
+				mat64.Row(row, i, a)
 				aNew.SetRow(count, row)
 				bNew.SetVec(count, b.At(i, 0))
 				count++
@@ -861,8 +890,8 @@ func simplexSolve(x, a *mat64.Dense, b *mat64.Vector) error {
 		}
 	*/
 
-	fmt.Println("anew = ", aNew)
-	fmt.Println("bnew = ", bNew)
+	// fmt.Println("anew = ", aNew)
+	// fmt.Println("bnew = ", bNew)
 	return x.Solve(aNew, bNew)
 }
 
