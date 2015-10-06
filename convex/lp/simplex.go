@@ -205,12 +205,10 @@ func simplex(initialBasic []int, c []float64, A mat64.Matrix, b []float64, tol f
 	if len(b) != m {
 		panic("lp: b vector incorrect length")
 	}
-	/*
-		fmt.Printf("a orig format\n% 0.4v\n", mat64.Formatted(A))
-		fmt.Println("a orig = ", A)
-		fmt.Printf("b orig %#v\n", b)
-		fmt.Printf("c orig %#v\n ", c)
-	*/
+	//fmt.Printf("a orig format\n% 0.4v\n", mat64.Formatted(A))
+	//fmt.Printf("a orig = %#v\n", A)
+	//fmt.Printf("b orig %#v\n", b)
+	//fmt.Printf("c orig %#v\n ", c)
 	/*
 		isZero := true
 		for _, v := range c {
@@ -293,8 +291,8 @@ func simplex(initialBasic []int, c []float64, A mat64.Matrix, b []float64, tol f
 		copy(basicIdxs, initialBasic)
 	}
 
-	// fmt.Println("at start")
-	// fmt.Println("ab = ", ab)
+	//fmt.Println("at start")
+	//fmt.Println("ab = ", ab)
 	// fmt.Println("xb = ", xb)
 
 	// Verify sizes
@@ -416,11 +414,21 @@ func simplex(initialBasic []int, c []float64, A mat64.Matrix, b []float64, tol f
 		//tmp2 := ab.Col(nil, replace)
 		an.SetCol(minIdx, tmp2)
 		ab.SetCol(replace, tmp1)
+
+		abshare := extractColumns(A, basicIdxs)
+		fmt.Println("abshare same")
+		fmt.Println(mat64.Equal(abshare, ab))
+		fmt.Println(basicIdxs)
+		//fmt.Println(A)
+		//fmt.Println(ab)
+		fmt.Printf("a orig format\n% 0.4v\n", mat64.Formatted(A))
+		fmt.Printf("ab format\n% 0.4v\n", mat64.Formatted(ab))
+
 		var xbVec mat64.Dense
 		err = xbVec.Solve(ab, bVec)
 		//err = simplexSolve(&xbVec, ab, bVec)
 		if err != nil {
-			//fmt.Println("ab = ", ab)
+			fmt.Println("ab = ", ab)
 			fmt.Println("err = ", err)
 			panic("lp: unexpected linear solve error")
 		}
@@ -490,6 +498,7 @@ func findNext(move []float64, aCol *mat64.Vector, bland bool, r []float64, tol f
 	m, _ := A.Dims()
 	// Find the element with the minimum reduced cost.
 	if bland {
+		fmt.Println("in bland")
 		// Find the first negative entry of r.
 		// TODO(btracey): Is there a way to communicate entries that are supposed
 		// to be zero? Should we round all numbers below a tol to zero.
@@ -556,6 +565,8 @@ func findNext(move []float64, aCol *mat64.Vector, bland bool, r []float64, tol f
 	} else {
 		// fmt.Println("not unbounded")
 	}
+	//fmt.Println("bhat", bHat)
+	//fmt.Println("d = ", d)
 	for i, v := range d {
 		// Only look at the postive d values
 		if v >= 0 {
@@ -564,7 +575,9 @@ func findNext(move []float64, aCol *mat64.Vector, bland bool, r []float64, tol f
 		}
 		move[i] = bHat[i] / -v
 	}
+	//fmt.Println("move", move)
 	// Replace the smallest movement in the basis.
+	fmt.Println(move)
 	replace = floats.MinIdx(move)
 	return minIdx, replace, false, nil
 }
@@ -837,6 +850,7 @@ func extractColumns(A mat64.Matrix, cols []int) *mat64.Dense {
 	return sub
 }
 
+/*
 // simplexSolve solves but being protective of all zero rows
 func simplexSolve(x, a *mat64.Dense, b *mat64.Vector) error {
 	m, n := a.Dims()
@@ -888,12 +902,12 @@ func simplexSolve(x, a *mat64.Dense, b *mat64.Vector) error {
 		for j := 0; j < n; j++ {
 			isZero := true
 		}
-	*/
+*/
 
-	// fmt.Println("anew = ", aNew)
-	// fmt.Println("bnew = ", bNew)
-	return x.Solve(aNew, bNew)
-}
+// fmt.Println("anew = ", aNew)
+// fmt.Println("bnew = ", bNew)
+//	return x.Solve(aNew, bNew)
+//}
 
 // Finding basic feasible solution -- "Phase 1 problem"
 // "All slacks basic case"
