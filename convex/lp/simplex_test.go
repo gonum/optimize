@@ -209,6 +209,7 @@ func testSimplex(t *testing.T, c []float64, a mat64.Matrix, b []float64, converg
 
 	// Quick hack to deal with ErrZeroRow
 	if errDual == ErrZeroColumn {
+		// TODO(btracey): Dual should return ErrZeroRow.
 		return errPrimal
 	}
 

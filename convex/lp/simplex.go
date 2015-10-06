@@ -15,146 +15,7 @@ import (
 // LQ update we could test both. Also need some way of extracting columns from a matrix
 // Harder to define the phase-1 problem but must be possible.
 
-// General solves a linear program in general form
-// A linear program is defined by
-//    minimize
-func General() {
-
-}
-
-// Solves a standard form LP
-func Standard() {
-
-}
-
-// Convert converts a General-form LP into a standard form LP.
-// General form:
-//  minimize c^T * x
-//  s.t      G * x <= h
-//           A * x = b
-// Standard form:
-//  minimize cNew^T * x
-//  s.t      aNew * x = bNew
-//           x >= 0
 //
-// TODO(btracey): Allow store memory?
-func Convert(c []float64, g mat64.Matrix, h []float64, a mat64.Matrix, b []float64) (cNew []float64, aNew *mat64.Dense, bNew []float64) {
-	nVar := len(c)
-
-	nIneq := len(h)
-	if g == nil {
-		if nIneq != 0 {
-			panic(badShape)
-		}
-	} else {
-		gr, gc := g.Dims()
-		if gr != nIneq {
-			panic(badShape)
-		}
-		if gc != nVar {
-			panic(badShape)
-		}
-	}
-
-	nEq := len(b)
-	if a == nil {
-		if nEq != 0 {
-			panic(badShape)
-		}
-	} else {
-		ar, ac := a.Dims()
-		if ar != nEq {
-			panic(badShape)
-		}
-		if ac != nVar {
-			panic(badShape)
-		}
-	}
-	// Procedure:
-	// 0. Start with general form
-	//  min.	c^T * x
-	//  s.t.	G * x <= h
-	//  		A * x = b
-	// 1. Introduce slack variables for each constraint
-	//  min. 	c^T * x
-	//  s.t.	G * x + s = h
-	//			A * x = b
-	//      	s >= 0
-	// 2. Add non-negativity constraints for x by splitting x
-	// into positive and negative components.
-	//   x = xp - xn
-	//   xp >= 0, xn >= 0
-	// This makes the LP
-	//  min.	c^T * xp - c^T xn
-	//  s.t. 	G * xp - G * xn + s = h
-	//			A * xp  - A * xn = b
-	//			xp >= 0, xn >= 0, s >= 0
-	// 3. Write the above in standard form:
-	//  xt = [xp
-	//	 	  xn
-	//		  s ]
-	//  min.	[c^T, -c^T, 0] xt
-	//  s.t.	[G, -G, I] xt = h
-	//   		[A, -A, 0] xt = b
-	//			x >= 0
-
-	nNewVar := nVar + nVar + nIneq // xp xn s
-	cNew = make([]float64, nNewVar)
-	copy(cNew, c)
-	copy(cNew[nVar:], c)
-	floats.Scale(-1, cNew[nVar:2*nVar])
-
-	nNewEq := nIneq + nEq
-
-	bNew = make([]float64, nNewEq)
-	copy(bNew, h)
-	copy(bNew[nIneq:], b)
-
-	aNew = mat64.NewDense(nNewEq, nNewVar, nil)
-	if nIneq != 0 {
-		aView := (aNew.View(0, 0, nIneq, nVar)).(*mat64.Dense)
-		aView.Copy(g)
-		aView = (aNew.View(0, nVar, nIneq, nVar)).(*mat64.Dense)
-		aView.Scale(-1, g)
-		aView = (aNew.View(0, 2*nVar, nIneq, nIneq)).(*mat64.Dense)
-		for i := 0; i < nIneq; i++ {
-			aView.Set(i, i, 1)
-		}
-	}
-	if nEq != 0 {
-		aView := (aNew.View(nIneq, 0, nEq, nVar)).(*mat64.Dense)
-		aView.Copy(a)
-		aView = (aNew.View(nIneq, nVar, nEq, nVar)).(*mat64.Dense)
-		aView.Scale(-1, a)
-	}
-	return cNew, aNew, bNew
-}
-
-var (
-	ErrInfeasible = errors.New("lp: problem is infeasible")
-	ErrLinSolve   = errors.New("lp: unexpected linear solve failure")
-	ErrUnbounded  = errors.New("lp: problem is unbounded")
-	ErrSingular   = errors.New("lp: A is singular")
-	ErrZeroColumn = errors.New("lp: err zero column")
-)
-
-var (
-	badShape = "lp: size mismatch"
-)
-
-const linDepTol = 1e-10
-
-// TODO(btracey): Provide method of artificial variables for help when problem
-// is infeasible?
-
-// simplex solves an LP in standard form.
-//  minimize	c^T x
-//  s.t. 		A*x = b
-//  			x >= 0
-// 				b >= 0
-// x0 is an initial point if appropriate
-// initialBasic is an initial set of basic indices.
-// A must have full rank.
 // TODO(btracey): Have some sort of preprocessing step for helping to fix A to make it
 // full rank?
 // TODO(btracey): Reduce rows? Get rid of all zeros, places where only one variable
@@ -163,8 +24,10 @@ const linDepTol = 1e-10
 // TODO(btracey): Need to improve error handling. Only want to panic if condition number inf.
 // TODO(btracey): Instead of simplex solve, there should be a "Reduced ab" where
 // the rows of a that are all zero are removed
-// For a detailed description of the Simplex method please see lectures 11-13 of
-// UC Math 352 https://www.youtube.com/watch?v=ESzYPFkY3og&index=11&list=PLh464gFUoJWOmBYla3zbZbc4nv2AXez6X .
+// TODO(btracey): Provide method of artificial variables for help when problem
+// is infeasible?
+// TODO(btracey): Provide a "sanitize" function to do things like remove all
+// zero rows and columns.
 //
 // Performance enhancements: Lots of linear solves.
 // All involving linear solves of Ab. Should factor Ab once.
@@ -174,7 +37,93 @@ const linDepTol = 1e-10
 // decomposition. Then you just need to update the factorization at each step.
 // The swap step is a rank-one update of Ab.
 // Use rank-1 update to update QR factors.
+
+var (
+	ErrInfeasible = errors.New("lp: problem is infeasible")
+	ErrLinSolve   = errors.New("lp: unexpected linear solve failure")
+	ErrUnbounded  = errors.New("lp: problem is unbounded")
+	ErrSingular   = errors.New("lp: A is singular")
+	ErrZeroColumn = errors.New("lp: A has a column of all zeros")
+	ErrZeroRow    = errors.New("lp: A has a row of all zeros")
+)
+
+var (
+	badShape = "lp: size mismatch"
+)
+
+const (
+	linDepTol  = 1e-10
+	initPosTol = 1e-14 // tolerance on x being positive for the initial feasible.
+)
+
+// simplex solves an LP in standard form:
+//  minimize	c^T x
+//  s.t. 		A*x = b
+//  			x >= 0
+// A must have full rank, and must not have any columns with all zeros.
+//
+// The Convert function can be used to transform an LP into standard form.
+//
+// initialBasic is a set of indices specifying an initial feasible solution.
+// If supplied, the initial feasible solution must be feasible.
+//
+// For a detailed description of the Simplex method please see lectures 11-13 of
+// UC Math 352 https://www.youtube.com/watch?v=ESzYPFkY3og&index=11&list=PLh464gFUoJWOmBYla3zbZbc4nv2AXez6X.
 func simplex(initialBasic []int, c []float64, A mat64.Matrix, b []float64, tol float64) (float64, []float64, []int, error) {
+	err := verifyInputs(initialBasic, c, A, b)
+	if err != nil {
+		if err == ErrUnbounded {
+			return math.Inf(-1), nil, nil, ErrUnbounded
+		}
+		return math.NaN(), nil, nil, err
+	}
+
+	// There is at least one optimal solution to the LP which is at the intersection
+	// to a set of constraint boundaries. For a standard form LP with m variables
+	// and n equality constraints, at least m-n elements of x must equal zero
+	// at optimality. The Simplex algorithm solves the standard-form LP by starting
+	// at an initial constraint vertex and successively moving to adjacent constraint
+	// vertices. At every vertex, the set of non-zero x values are the "basic
+	// feasible solution". The list of non-zero x's are maintained in basicIdxs,
+	// the respective columns of A are in ab, and the actual non-zero values of
+	// x are in xb.
+	//
+	// The LP is equality constrained such that A * x = b. This can be expanded
+	// to
+	//  ab * xb + an * xn = b
+	// where ab are the columns of a in the basic set, and an are all of the
+	// other columns. Since each element of xn is zero by definition, this means
+	// that for all feasible solutions xb = ab^-1 * b.
+
+	// Before the simplex algorithm can start, an initial feasible solution must
+	// be found. If initialBasic is non-nil a feasible solution has been supplied.
+	// If not, find an initial feasible solution, solving the "Phase I" problem
+	// if necessary.
+	var basicIdxs []int // The indices of the non-zero x values.
+	var ab *mat64.Dense // The subset of columns of A listed in basicIdxs.
+	var xb []float64    // The non-zero elements of x. xb = ab^-1 b
+	if initialBasic != nil {
+		if len(initialBasic) != m {
+			panic("lp: incorrect number of initial vectors")
+		}
+		ab := extractColumns(A, initialBasic)
+		xb, err = initializeFromBasic(ab, b)
+		if err != nil {
+			panic(err)
+		}
+		basicIdxs = make([]int, len(initialBasic))
+		copy(basicIdxs, initialBasic)
+	} else {
+		basicIdxs, ab, xb, err = findInitialBasic(A, b)
+		if err != nil {
+			return math.NaN(), nil, nil, err
+		}
+	}
+
+	// Find an initial set of basic vectors and an initial
+	// basic solution. The initial basic solution should be feasible and contain
+	// a set of linearly independent columns of A.
+
 	// First, re-arrange the variables such that the last m columns are linearly
 	// independent
 	// A = [A_n A_B]  A_B = mxm, A_n = m x (n-m)
@@ -190,21 +139,10 @@ func simplex(initialBasic []int, c []float64, A mat64.Matrix, b []float64, tol f
 	// TODO(btracey): If we only need ab^T and An^T, we can work row-wise helping
 	// caches.
 
-	// Phase 1: Initialization. Find an initial set of basic vectors and an initial
-	// basic solution. The initial basic solution should be feasible and contain
-	// a set of linearly independent columns of A.
-
 	// fmt.Println("a =", A)
 	// fmt.Println("b =", b)
 	//fmt.Println("c = ", c)
 
-	m, n := A.Dims()
-	if len(c) != n {
-		panic("lp: c vector incorrect length")
-	}
-	if len(b) != m {
-		panic("lp: b vector incorrect length")
-	}
 	//fmt.Printf("a orig format\n% 0.4v\n", mat64.Formatted(A))
 	//fmt.Printf("a orig = %#v\n", A)
 	//fmt.Printf("b orig %#v\n", b)
@@ -221,75 +159,6 @@ func simplex(initialBasic []int, c []float64, A mat64.Matrix, b []float64, tol f
 			//return 0, make([]float64, , nil, nil
 		}
 	*/
-	if len(c) != n {
-		panic("lp: c vector incorrect length")
-	}
-	if len(initialBasic) != 0 && len(initialBasic) != m {
-		panic("lp: initialBasic incorrect length")
-	}
-	// Check that if a row only has zero elements that the b vector is zero, othewise
-	// infeasible
-	for i := 0; i < m; i++ {
-		isZero := true
-		for j := 0; j < n; j++ {
-			if A.At(i, j) != 0 {
-				isZero = false
-				break
-			}
-		}
-		if isZero && b[i] != 0 {
-			// Infeasible
-			return math.NaN(), nil, nil, ErrInfeasible
-		}
-	}
-
-	// Check that if a column only has zero elements that the respective C vector
-	// is positive (otherwise unbounded). Otherwise return ErrZeroRow as this
-	// breaks update rules.
-	// TODO(btracey): Fix algorithm to deal with this case
-	for j := 0; j < n; j++ {
-		isZero := true
-		for i := 0; i < m; i++ {
-			if A.At(i, j) != 0 {
-				isZero = false
-				break
-			}
-		}
-		if isZero && c[j] < 0 {
-			// fmt.Println("Unbounded for zero row")
-			return math.Inf(-1), nil, nil, ErrUnbounded
-		} else if isZero {
-			return math.NaN(), nil, nil, ErrZeroColumn
-		}
-	}
-
-	var ab *mat64.Dense
-	var basicIdxs []int
-	var xb []float64
-	var err error
-	if initialBasic == nil {
-		// fmt.Println("Initial basic nil")
-		basicIdxs, ab, xb, err = findInitialBasic(A, b)
-		if err != nil {
-			return math.NaN(), nil, nil, err
-		}
-	} else {
-		// fmt.Println("Initial basic nonnil")
-		// fmt.Println("c = ", c)
-		if len(initialBasic) != m {
-			panic("lp: incorrect number of initial vectors")
-		}
-		// Check that the initial vectors are linearly independent and that
-		// the initial basic set is feasible.
-		var feasible bool
-		feasible, ab, xb = isFeasibleSet(initialBasic, A, b)
-		if !feasible {
-			// TODO(btracey): Should this be an error?
-			panic("lp: provided initial set is not feasible")
-		}
-		basicIdxs = make([]int, len(initialBasic))
-		copy(basicIdxs, initialBasic)
-	}
 
 	//fmt.Println("at start")
 	//fmt.Println("ab = ", ab)
@@ -493,6 +362,61 @@ func simplex(initialBasic []int, c []float64, A mat64.Matrix, b []float64, tol f
 	//}
 }
 
+func verifyInputs(initialBasic []int, c []float64, A mat64.Matrix, b []float64) error {
+	// Verify inputs.
+	m, n := A.Dims()
+	if len(c) != n {
+		panic("lp: c vector incorrect length")
+	}
+	if len(b) != m {
+		panic("lp: b vector incorrect length")
+	}
+	if len(c) != n {
+		panic("lp: c vector incorrect length")
+	}
+	if len(initialBasic) != 0 && len(initialBasic) != m {
+		panic("lp: initialBasic incorrect length")
+	}
+
+	// This sanitization is necessary to prevent singularity.
+
+	// Check that if a row of A only has zero elements that corresponding
+	// element in b is zero, otherwise the problem is infeasible.
+	// Otherwise return ErrZeroRow.
+	for i := 0; i < m; i++ {
+		isZero := true
+		for j := 0; j < n; j++ {
+			if A.At(i, j) != 0 {
+				isZero = false
+				break
+			}
+		}
+		if isZero && b[i] != 0 {
+			// Infeasible
+			return ErrInfeasible
+		} else if isZero {
+			return ErrZeroRow
+		}
+	}
+	// Check that if a column only has zero elements that the respective C vector
+	// is positive (otherwise unbounded). Otherwise return ErrZeroColumn.
+	for j := 0; j < n; j++ {
+		isZero := true
+		for i := 0; i < m; i++ {
+			if A.At(i, j) != 0 {
+				isZero = false
+				break
+			}
+		}
+		if isZero && c[j] < 0 {
+			// fmt.Println("Unbounded for zero row")
+			return ErrUnbounded
+		} else if isZero {
+			return ErrZeroColumn
+		}
+	}
+}
+
 // move stored in place
 func findNext(move []float64, aCol *mat64.Vector, bland bool, r []float64, tol float64, ab *mat64.Dense, xb []float64, nonBasicIdx []int, A mat64.Matrix) (minIdx, replace int, done bool, err error) {
 	m, _ := A.Dims()
@@ -582,6 +506,7 @@ func findNext(move []float64, aCol *mat64.Vector, bland bool, r []float64, tol f
 	return minIdx, replace, false, nil
 }
 
+/*
 // testReplaceColumn sees if repla
 func replaceSingular(m int, xb []float64, minIdx int, nonBasicIdx []int, aCol *mat64.Vector, ab *mat64.Dense, A mat64.Matrix) (ok bool) {
 	//bHat := xb // ab^-1 b
@@ -603,11 +528,52 @@ func replaceSingular(m int, xb []float64, minIdx int, nonBasicIdx []int, aCol *m
 	}
 	return true
 }
+*/
 
-// isFeasibleSet tests if the basicIdxs are a feasible set.
+// initializeFromBasic initializes the basic feasible solution given a set of
+// basic indices. It extracts the columns
+// of A specified by basicIdxs and finds the x values at that location. If
+// the columns of A are not linearly independent or if the initial set is not
+// feasible, valid is false.
+func initializeFromBasic(ab *mat64.Dense, b []float64) (xb []float64, err error) {
+	m, _ := ab.Dims()
+	xb = make([]float64, m)
+	xbMat := mat64.NewVector(m, xb)
+	err = xbMat.SolveVec(ab, mat64.NewVector(n, data))
+	if err != nil {
+		return nil, errors.New("lp: subcolumns of A for supplied initial basic singular")
+	}
+	// The solve ensures that the equality constraints are met (ab * xb = b).
+	// Thus, the solution is feasible if and only if all of the x's are positive.
+	allPos := true
+	for _, v := range xb {
+		if v < -initPosTol {
+			allPos = false
+			break
+		}
+	}
+	if !allPos {
+		return nil, errors.New("lp: supplied subcolumns not a feasible solution")
+	}
+	return xb, nil
+}
+
+// extractColumns creates a new matrix out of the columns of A specified by cols.
+func extractColumns(A mat64.Matrix, cols []int) *mat64.Dense {
+	r, _ := A.Dims()
+	sub := mat64.NewDense(r, len(cols), nil)
+	col := make([]float64, r)
+	for j, idx := range cols {
+		mat64.Col(col, idx, A)
+		sub.SetCol(j, col)
+	}
+	return sub
+}
+
+// isFeasibleSet tests if the basicIdxs are a feasible set, and returns the
+// subcolumns of A
 func isFeasibleSet(basicIdxs []int, A mat64.Matrix, b []float64) (feasible bool, aBasic *mat64.Dense, xb []float64) {
 	m, _ := A.Dims()
-	// TODO(btracey): remove these when known to be correct
 	if len(basicIdxs) != m {
 		panic("lp: unexpected bad basicIdx length")
 	}
@@ -637,8 +603,7 @@ func isFeasibleSet(basicIdxs []int, A mat64.Matrix, b []float64) (feasible bool,
 	return allPos, aBasic, xb
 }
 
-// findInitialBasic finds an initial basic solution and the corresponding
-// columns of A.
+// findInitialBasic finds an initial basic solution.
 func findInitialBasic(A mat64.Matrix, b []float64) ([]int, *mat64.Dense, []float64, error) {
 	m, n := A.Dims()
 	basicIdxs := findLinearlyIndependent(A)
@@ -835,19 +800,6 @@ func findLinearlyIndependent(A mat64.Matrix) []int {
 		}
 	}
 	return idxs
-}
-
-// extractColumns creates a new matrix out of the columns of A specified by cols.
-func extractColumns(A mat64.Matrix, cols []int) *mat64.Dense {
-	r, _ := A.Dims()
-	sub := mat64.NewDense(r, len(cols), nil)
-	for j, idx := range cols {
-		// TODO(btracey): Special case for Columner, etc.
-		for i := 0; i < r; i++ {
-			sub.Set(i, j, A.At(i, idx))
-		}
-	}
-	return sub
 }
 
 /*
