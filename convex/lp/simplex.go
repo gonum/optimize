@@ -77,6 +77,7 @@ func simplex(initialBasic []int, c []float64, A mat64.Matrix, b []float64, tol f
 		}
 		return math.NaN(), nil, nil, err
 	}
+	m, n := A.Dims()
 
 	// There is at least one optimal solution to the LP which is at the intersection
 	// to a set of constraint boundaries. For a standard form LP with m variables
@@ -415,6 +416,7 @@ func verifyInputs(initialBasic []int, c []float64, A mat64.Matrix, b []float64) 
 			return ErrZeroColumn
 		}
 	}
+	return nil
 }
 
 // move stored in place
@@ -539,7 +541,7 @@ func initializeFromBasic(ab *mat64.Dense, b []float64) (xb []float64, err error)
 	m, _ := ab.Dims()
 	xb = make([]float64, m)
 	xbMat := mat64.NewVector(m, xb)
-	err = xbMat.SolveVec(ab, mat64.NewVector(n, data))
+	err = xbMat.SolveVec(ab, mat64.NewVector(m, b))
 	if err != nil {
 		return nil, errors.New("lp: subcolumns of A for supplied initial basic singular")
 	}
