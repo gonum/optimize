@@ -379,7 +379,9 @@ func verifyInputs(initialBasic []int, c []float64, A mat64.Matrix, b []float64) 
 		panic("lp: initialBasic incorrect length")
 	}
 
-	// This sanitization is necessary to prevent singularity.
+	// Do some sanity checks so that ab does not become singular during the
+	// simplex solution. If the ZeroRow checks are removed then the code for
+	// finding a set of linearly indepent columns must be improved.
 
 	// Check that if a row of A only has zero elements that corresponding
 	// element in b is zero, otherwise the problem is infeasible.
@@ -410,13 +412,207 @@ func verifyInputs(initialBasic []int, c []float64, A mat64.Matrix, b []float64) 
 			}
 		}
 		if isZero && c[j] < 0 {
-			// fmt.Println("Unbounded for zero row")
 			return ErrUnbounded
 		} else if isZero {
 			return ErrZeroColumn
 		}
 	}
 	return nil
+}
+
+// initializeFromBasic initializes the basic feasible solution given a set of
+// basic indices. It extracts the columns
+// of A specified by basicIdxs and finds the x values at that location. If
+// the columns of A are not linearly independent or if the initial set is not
+// feasible, valid is false.
+func initializeFromBasic(ab *mat64.Dense, b []float64) (xb []float64, err error) {
+	m, _ := ab.Dims()
+	xb = make([]float64, m)
+	xbMat := mat64.NewVector(m, xb)
+	err = xbMat.SolveVec(ab, mat64.NewVector(m, b))
+	if err != nil {
+		return nil, errors.New("lp: subcolumns of A for supplied initial basic singular")
+	}
+	// The solve ensures that the equality constraints are met (ab * xb = b).
+	// Thus, the solution is feasible if and only if all of the x's are positive.
+	allPos := true
+	for _, v := range xb {
+		if v < -initPosTol {
+			allPos = false
+			break
+		}
+	}
+	if !allPos {
+		return xb, errors.New("lp: supplied subcolumns not a feasible solution")
+	}
+	return xb, nil
+}
+
+// extractColumns creates a new matrix out of the columns of A specified by cols.
+func extractColumns(A mat64.Matrix, cols []int) *mat64.Dense {
+	r, _ := A.Dims()
+	sub := mat64.NewDense(r, len(cols), nil)
+	col := make([]float64, r)
+	for j, idx := range cols {
+		mat64.Col(col, idx, A)
+		sub.SetCol(j, col)
+	}
+	return sub
+}
+
+// findInitialBasic finds an initial basic solution.
+func findInitialBasic(A mat64.Matrix, b []float64) ([]int, *mat64.Dense, []float64, error) {
+	m, n := A.Dims()
+	basicIdxs := findLinearlyIndependent(A)
+	if len(basicIdxs) != m {
+		return nil, nil, nil, ErrSingular
+	}
+	// It may be that this linearly independent basis is also a feasible set. If
+	// so, the Phase I problem can be avoided. Check if it is.
+	ab := extractColumns(A, initialBasic)
+	xb, err = initializeFromBasic(ab, b)
+	if err != nil {
+		return basicIdxs, ab, xb, nil
+	}
+
+	// This set was not feasible. Instead the "Phase I" problem must be solved
+	// to find an initial feasible set of basis.
+	//
+	// Method: Construct an LP whose optimal solution is a feasible solution
+	// to the original LP.
+	// 1) Introduce an artificial variable x_{n+1}.
+	// 2) Let x_j be the most negative element of x_b (largest constraint violation).
+	// 3) Add the artificial variable to A with:
+	//      a_{n+1} = b - \sum_{i in basicIdxs} a_i + a_j
+	//    swap j with n+1 in the basicIdxs.
+	// 4) Define a new LP:
+	//   minimize  x_{n+1}
+	//   subject to [A A_{n+1}][x_1 ... x_{n+1}] = b
+	//          x, x_{n+1} >= 0
+	// 5) Solve this LP. If x_{n+1} != 0, then the problem is infeasible, otherwise
+	// the found basis can be used as an initial basis for phase II.
+	//
+	// The extra column in Step 3 is defined such that the vector of 1s is an
+	// initial feasible solution.
+
+	// Find the largest constraint violator.
+	// Compute a_{n+1} = b - \sum{i in basicIdxs}a_i + a_j. j is in basicIDx, so
+	// instead just subtract the basicIdx columns that are not minIDx.
+	minIdx := floats.MinIdx(xb)
+	aX1 := make([]float64, m)
+	copy(aX1, b)
+	col := make([]float64, m)
+	for i, v := range basicIdxs {
+		if i == minIdx {
+			continue
+		}
+		mat64.Col(col, v, A)
+		floats.Sub(aX1, col)
+	}
+
+	// Construct the new LP.
+	// aNew = [A, a_{n+1}]
+	// bNew = b
+	// cNew = 1 for x_{n+1}
+	aNew := mat64.NewDense(m, n+1, nil)
+	aNew.Copy(A)
+	aNew.SetCol(n, aX1)
+	basicIdxs[minIdx] = n // swap minIdx with n in the basic set.
+	c := make([]float64, n+1)
+	c[n] = 1
+
+	/*
+		// Validation code.
+		// The vector of all 1s should be a feasible solution to this new LP
+		aSharp := extractColumns(aNew, basicIdxs)
+
+		var tmpSharp mat64.Vector
+		ones := mat64.NewVector(m, nil)
+		for i := 0; i < ones.Len(); i++ {
+			ones.SetVec(i, 1)
+		}
+		tmpSharp.MulVec(aSharp, ones)
+		if !floats.EqualApprox(tmpSharp.RawVector().Data, b, 1e-10) {
+			panic("ones not feasible")
+		}
+	*/
+
+	// Solve this linear program (but with an initial feasible solution provided this time).
+	_, xOpt, newBasic, err := simplex(basicIdxs, c, aNew, b, 1e-14)
+	if err != nil {
+		return nil, nil, nil, errors.New(fmt.Sprintf("lp: error finding feasible basis: %s", err))
+	}
+
+	// If n+1 is part of the solution basis then the problem is infeasible. If
+	// not, then the problem is feasible and newBasic is an initial feasible
+	// solution.
+	var inBasis bool
+	for i, v := range newBasic {
+		if v == n {
+			inBasis = true
+			break
+		}
+		xb[i] = xOpt[v]
+	}
+	if inBasis {
+		return nil, nil, nil, ErrInfeasible
+	}
+	ab = extractColumns(A, newBasic)
+	return newBasic, ab, xb, nil
+}
+
+// findLinearlyIndependnt finds a set of linearly independent columns of A, and
+// returns the column indexes of the linearly independent columns.
+func findLinearlyIndependent(A mat64.Matrix) []int {
+	m, n := A.Dims()
+	idxs := make([]int, 0, m)
+	columns := mat64.NewDense(m, m, nil)
+	newCol := make([]float64, m)
+	// Walk in reverse order because slack variables are typically the last columns
+	// of A.
+	for i := n - 1; i >= 0; i-- {
+		mat64.Col(newCol, i, A)
+		if len(idxs) == 0 {
+			// A column is linearly independent from the null set.
+			// This is what needs to be changed if zero columns are allowed, as
+			// a column of all zeros is not linearly independent from itself.
+			columns.SetCol(len(idxs), newCol)
+			idxs = append(idxs, i)
+			continue
+		}
+		if linearlyDependent(mat64.NewVector(m, newCol), columns.View(0, 0, m, len(idxs)), linDepTol) {
+			continue
+		}
+		columns.SetCol(len(idxs), newCol)
+		idxs = append(idxs, i)
+		if len(idxs) == m {
+			break
+		}
+	}
+	return idxs
+}
+
+// linearlyDependent returns whether the vector is linearly dependent
+// with the columns of A. It assumes that A is a full-rank matrix.
+func linearlyDependent(vec *mat64.Vector, A mat64.Matrix, tol float64) bool {
+	// A vector is linearly dependent on the others if it can
+	// be computed from a weighted sum of the existing columns, that
+	// is c_new = \sum_i w_i c_i. In matrix form, this is represented
+	// as c_new = C * w, where C is the composition of the existing
+	// columns. We can solve this system of equations for w to get w^.
+	// If C * w^ = c_new, then c_new is linearly dependent. Otherwise
+	// it is independent.
+
+	var wHat mat64.Vector
+	err := wHat.SolveVec(A, vec)
+	if err != nil {
+		// Solve can only fail if C is not of full rank. Method assumes A is
+		// of full rank.
+		panic("lp: unexpected linear solve failure")
+	}
+	var test mat64.Vector
+	test.MulVec(A, &wHat)
+	return mat64.EqualApprox(&test, vec, linDepTol)
 }
 
 // move stored in place
@@ -507,364 +703,3 @@ func findNext(move []float64, aCol *mat64.Vector, bland bool, r []float64, tol f
 	replace = floats.MinIdx(move)
 	return minIdx, replace, false, nil
 }
-
-/*
-// testReplaceColumn sees if repla
-func replaceSingular(m int, xb []float64, minIdx int, nonBasicIdx []int, aCol *mat64.Vector, ab *mat64.Dense, A mat64.Matrix) (ok bool) {
-	//bHat := xb // ab^-1 b
-	bHat := make([]float64, len(xb))
-	copy(bHat, xb)
-	rac, _ := aCol.Dims()
-	aColCopy := mat64.NewVector(rac, nil)
-	aColCopy.CopyVec(aCol)
-	colIdx := nonBasicIdx[minIdx]
-	// TODO(btracey): Can make this a column view.
-	for i := 0; i < m; i++ {
-		aColCopy.SetVec(i, A.At(i, colIdx))
-	}
-	// d = -ab^-1 * A_minidx.
-	var dVec mat64.Dense
-	err := dVec.Solve(ab, aCol)
-	if err != nil {
-		return false
-	}
-	return true
-}
-*/
-
-// initializeFromBasic initializes the basic feasible solution given a set of
-// basic indices. It extracts the columns
-// of A specified by basicIdxs and finds the x values at that location. If
-// the columns of A are not linearly independent or if the initial set is not
-// feasible, valid is false.
-func initializeFromBasic(ab *mat64.Dense, b []float64) (xb []float64, err error) {
-	m, _ := ab.Dims()
-	xb = make([]float64, m)
-	xbMat := mat64.NewVector(m, xb)
-	err = xbMat.SolveVec(ab, mat64.NewVector(m, b))
-	if err != nil {
-		return nil, errors.New("lp: subcolumns of A for supplied initial basic singular")
-	}
-	// The solve ensures that the equality constraints are met (ab * xb = b).
-	// Thus, the solution is feasible if and only if all of the x's are positive.
-	allPos := true
-	for _, v := range xb {
-		if v < -initPosTol {
-			allPos = false
-			break
-		}
-	}
-	if !allPos {
-		return nil, errors.New("lp: supplied subcolumns not a feasible solution")
-	}
-	return xb, nil
-}
-
-// extractColumns creates a new matrix out of the columns of A specified by cols.
-func extractColumns(A mat64.Matrix, cols []int) *mat64.Dense {
-	r, _ := A.Dims()
-	sub := mat64.NewDense(r, len(cols), nil)
-	col := make([]float64, r)
-	for j, idx := range cols {
-		mat64.Col(col, idx, A)
-		sub.SetCol(j, col)
-	}
-	return sub
-}
-
-// isFeasibleSet tests if the basicIdxs are a feasible set, and returns the
-// subcolumns of A
-func isFeasibleSet(basicIdxs []int, A mat64.Matrix, b []float64) (feasible bool, aBasic *mat64.Dense, xb []float64) {
-	m, _ := A.Dims()
-	if len(basicIdxs) != m {
-		panic("lp: unexpected bad basicIdx length")
-	}
-	aBasic = extractColumns(A, basicIdxs)
-	var xbMat mat64.Dense
-	err := xbMat.Solve(aBasic, mat64.NewVector(m, b))
-	if err != nil {
-		fmt.Println("a basic in isfeasible")
-		fmt.Println("a = ", A)
-		fmt.Println(aBasic)
-		// This should never error as the first step ensured that the columns
-		// were linearly independent.
-		panic("lp: unexpected linear solve error")
-	}
-	xb = mat64.Col(nil, 0, &xbMat)
-	//xb = xbMat.Col(nil, 0)
-
-	allPos := true
-	// If xb are all positive then we already have an initial feasible set.
-	// TODO(btracey): Is this the best way to deal with floating point error.
-	for _, v := range xb {
-		if v < -1e-15 {
-			allPos = false
-			break
-		}
-	}
-	return allPos, aBasic, xb
-}
-
-// findInitialBasic finds an initial basic solution.
-func findInitialBasic(A mat64.Matrix, b []float64) ([]int, *mat64.Dense, []float64, error) {
-	m, n := A.Dims()
-	basicIdxs := findLinearlyIndependent(A)
-	if len(basicIdxs) != m {
-		return nil, nil, nil, ErrSingular
-	}
-	// Use this linearly independent basis to find an initial feasible set.
-	// Check if this is already a feasible set of variables.
-	feasible, aBasic, xb := isFeasibleSet(basicIdxs, A, b)
-	if feasible {
-		return basicIdxs, aBasic, xb, nil
-	}
-
-	//fmt.Println("initbasic not feasible, aBasic = ", aBasic)
-
-	// Solve the "Phase I" problem of finding an initial feasible solution.
-	// The Phase I problem can be solved by introducing one additional artificial
-	// variable. This artifical variable allows for the definition of an alternate
-	// LP with a known initial feasible basis.
-	// x_j is the most negative element of x_b.
-	// Introduce an additional variable, x_{n+1}
-	// a_{n+1} = b - \sum_{i in basicIdxs} a_i + a_j
-	// Remove j from the basicIdxs, add in n+1.
-	// Define a new LP:
-	//   minimize  x_{n+1}
-	//   subject to [A A_{n+1}][x_1 ... x_{n+1}] = b
-	//          x, x_{n+1} >= 0
-	// if x_{n+1} ends up non-zero, then infeasible.
-	// if is zero, then optimal basis can be used as initial basis for phase II.
-	//
-	minIdx := floats.MinIdx(xb)
-	// fmt.Println("xb = ", xb)
-	aX1 := make([]float64, m)
-
-	// The x+1^th column of A is b - \sum{i in basicIdxs}a_i + a_j.
-	// This is the same as subtracting all of the columns that are not the minidx
-	copy(aX1, b)
-	for i, v := range basicIdxs {
-		if i == minIdx {
-			continue
-		}
-		for i := 0; i < m; i++ {
-			aX1[i] -= A.At(i, v)
-		}
-	}
-	/*
-		fmt.Println("a =")
-		fmt.Println(mat64.Formatted(A))
-		fmt.Println("b = ")
-		fmt.Println(b)
-		fmt.Println("ax1 =", aX1)
-	*/
-	aNew := mat64.NewDense(m, n+1, nil)
-	aNew.Copy(A)
-	aNew.SetCol(n, aX1)
-	// Add the last element to the basic idx list
-	basicIdxs[minIdx] = n
-	c := make([]float64, n+1)
-	c[n] = 1
-
-	// The vector of all 1s should be a feasible solution to this new LP
-	aSharp := extractColumns(aNew, basicIdxs)
-
-	// TODO(btracey): It is possible due to floating point noise that this
-	// new matrix is singular.
-	// fmt.Println("asharp det ", mat64.Det(aSharp))
-
-	var tmpSharp mat64.Vector
-	ones := mat64.NewVector(m, nil)
-	for i := 0; i < ones.Len(); i++ {
-		ones.SetVec(i, 1)
-	}
-	tmpSharp.MulVec(aSharp, ones)
-	if !floats.EqualApprox(tmpSharp.RawVector().Data, b, 1e-10) {
-		panic("ones not feasible")
-	}
-
-	// Solve this linear program
-	/*
-		fmt.Println("Starting Phase 1")
-		fmt.Println("basic indexes", basicIdxs)
-		fmt.Println("a orig")
-		fmt.Printf("% 0.4v\n", mat64.Formatted(A))
-		fmt.Println("a = ", A)
-		fmt.Println("b orig", b)
-		fmt.Println("aNew = ")
-		fmt.Printf("% 0.4v\n", mat64.Formatted(aNew))
-		fmt.Println("b = ")
-		fmt.Println(b)
-		fmt.Println("c = ", c)
-	*/
-
-	_, xOpt, newBasic, err := simplex(basicIdxs, c, aNew, b, 1e-14)
-	//fmt.Println("Done Phase 1")
-
-	if err != nil {
-		panic("Phase 1 problem errored: " + err.Error())
-		return nil, nil, nil, errors.New(fmt.Sprintf("lp: error finding feasible basis: %s", err))
-	}
-	var inBasis bool
-	for i, v := range newBasic {
-		if v == n {
-			inBasis = true
-			break
-		}
-		xb[i] = xOpt[v]
-	}
-	if inBasis {
-		return nil, nil, nil, ErrInfeasible
-	}
-	ab := extractColumns(A, newBasic)
-	return newBasic, ab, xb, nil
-}
-
-// linearlyIndependent returns whether the vector is linearly independent
-// of the columns of A. It assumes that A is a full-rank matrix.
-func linearlyDependent(vec *mat64.Vector, A mat64.Matrix, tol float64) bool {
-	// A vector is linearly dependent on the others if it can
-	// be computed from a weighted sum of the existing columns, that
-	// is c_new = \sum_i w_i c_i. In matrix form, this is represented
-	// as c_new = C * w, where C is the composition of the existing
-	// columns. We can solve this system of equations for w to get w^.
-	// If C * w^ = c_new, then c_new is linearly dependent. Otherwise
-	// it is independent.
-	_, n := A.Dims()
-	// TODO(btracey): Replace when we have vector.Solve()
-	var wHatMat mat64.Dense
-	err := wHatMat.Solve(A, vec)
-	if err != nil {
-		// Solve can only fail if C is not of full rank. We have been
-		// careful to only add linearly independent columns, so it should
-		// never fail.
-		panic("lp: unexpected linear solve failure")
-	}
-	// TODO(btracey): Remove this test when know correct
-	r, c := wHatMat.Dims()
-	if r != n || c != 1 {
-		panic("lp: bad size")
-	}
-	wHat := wHatMat.ColView(0)
-	var test mat64.Vector
-	test.MulVec(A, wHat)
-	// TODO(btracey): Remove when the code is confirmed correct
-	if vec.Len() != test.Len() {
-		panic("lp: bad size")
-	}
-	//return test.EqualsApproxVec(vec, linDepTol)
-	return mat64.EqualApprox(&test, vec, linDepTol)
-}
-
-// findLinearlyIndependnt finds a set of linearly independent columns of A, and
-// returns the column indexes of the linearly independent columns.
-func findLinearlyIndependent(A mat64.Matrix) []int {
-	m, n := A.Dims()
-	idxs := make([]int, 0, m)
-	// TODO(btracey): It would be nice if there was a way to abstract this
-	// over matrix types to take advantage of structure in A.
-	columns := mat64.NewDense(m, m, nil)
-	newCol := make([]float64, m)
-	// Walk in reverse order because slack variables are appended at the end
-	// of A usually.
-	for i := n - 1; i >= 0; i-- {
-		// TODO(btracey): fast path if A is a columner.
-		allzeros := true
-		for k := 0; k < m; k++ {
-			v := A.At(k, i)
-			if v != 0 {
-				allzeros = false
-			}
-			newCol[k] = v
-		}
-		if allzeros {
-			continue
-		}
-		if len(idxs) == 0 {
-			// A non-zero column is linearly independent from the null set.
-			// Append it to the working set.
-			columns.SetCol(len(idxs), newCol)
-			idxs = append(idxs, i)
-			continue
-		}
-		if linearlyDependent(mat64.NewVector(m, newCol), columns.View(0, 0, m, len(idxs)), linDepTol) {
-			continue
-		}
-		columns.SetCol(len(idxs), newCol)
-		idxs = append(idxs, i)
-		if len(idxs) == m {
-			break
-		}
-	}
-	if len(idxs) == m {
-		if mat64.Det(columns) == 0 {
-			panic("lp det is zero")
-		}
-	}
-	return idxs
-}
-
-/*
-// simplexSolve solves but being protective of all zero rows
-func simplexSolve(x, a *mat64.Dense, b *mat64.Vector) error {
-	m, n := a.Dims()
-	allzero := make(map[int]struct{})
-	for i := 0; i < m; i++ {
-		if b.At(i, 0) == 0 {
-			isZero := true
-			for j := 0; j < n; j++ {
-				v := a.At(i, j)
-				if v != 0 {
-					isZero = false
-					break
-				}
-			}
-			if isZero {
-				allzero[i] = struct{}{}
-			}
-		}
-	}
-	var aNew *mat64.Dense
-	var bNew *mat64.Vector
-	row := make([]float64, n)
-	if len(allzero) == 0 {
-		aNew = a
-		bNew = b
-	} else {
-		mNew := m - len(allzero)
-		aNew = mat64.NewDense(mNew, n, nil)
-		bNew = mat64.NewVector(mNew, nil)
-		var count int
-		for i := 0; i < m; i++ {
-			_, zero := allzero[i]
-			if !zero {
-				//a.Row(row, i)
-				mat64.Row(row, i, a)
-				aNew.SetRow(count, row)
-				bNew.SetVec(count, b.At(i, 0))
-				count++
-			}
-		}
-	}
-
-	// HERE: The problem is when one of the swaps makes all of the elements zore.
-	// We also need to look at getting rid of the zero columns. Tricky because
-	// then have a lsq rather than a normal solve.
-	/*
-		// See if any of the columns are all zero. If so, just make the corresponding x zero.
-		colZero := make
-		for j := 0; j < n; j++ {
-			isZero := true
-		}
-*/
-
-// fmt.Println("anew = ", aNew)
-// fmt.Println("bnew = ", bNew)
-//	return x.Solve(aNew, bNew)
-//}
-
-// Finding basic feasible solution -- "Phase 1 problem"
-// "All slacks basic case"
-// If b >= 0
-// Then can set last elements of b as initial basis -- last (n-m) elements of b.
-// Can force b >= by multiplying by -1.
