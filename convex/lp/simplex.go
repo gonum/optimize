@@ -52,9 +52,11 @@ var (
 )
 
 const (
-	linDepTol   = 1e-10
-	initPosTol  = 1e-14 // tolerance on x being positive for the initial feasible.
-	blandNegTol = 1e-14
+	linDepTol    = 1e-10
+	initPosTol   = 1e-14 // tolerance on x being positive for the initial feasible.
+	blandNegTol  = 1e-14
+	unboundedTol = 0
+	moveNegTol   = 0
 )
 
 // simplex solves an LP in standard form:
@@ -108,7 +110,7 @@ func simplex(initialBasic []int, c []float64, A mat64.Matrix, b []float64, tol f
 		if len(initialBasic) != m {
 			panic("lp: incorrect number of initial vectors")
 		}
-		ab := extractColumns(A, initialBasic)
+		ab = extractColumns(A, initialBasic)
 		xb, err = initializeFromBasic(ab, b)
 		if err != nil {
 			panic(err)
@@ -121,6 +123,14 @@ func simplex(initialBasic []int, c []float64, A mat64.Matrix, b []float64, tol f
 			return math.NaN(), nil, nil, err
 		}
 	}
+	/*
+		fmt.Printf("Ainit\n%0.4v\n", mat64.Formatted(A))
+		fmt.Printf("a = %#v\n", A)
+		fmt.Printf("b = %#v\n", b)
+		fmt.Printf("c = %#v\n", c)
+		fmt.Printf("initial basic = %#v\n", basicIdxs)
+		fmt.Println("tol = ", tol)
+	*/
 
 	// Now, basicIdxs contains the indexes for an initial feasible solution,
 	// ab contains the extracted columns of A, and xb contains the feasible
@@ -253,7 +263,7 @@ func simplex(initialBasic []int, c []float64, A mat64.Matrix, b []float64, tol f
 		xbVec := mat64.NewVector(len(xb), xb)
 		err = xbVec.SolveVec(ab, bVec)
 		if err != nil {
-			panic("lp: unexpected linear solve error")
+			panic("lp: unexpected linear solve error: " + err.Error())
 		}
 
 		// Verification check. Can remove when correct.
@@ -279,8 +289,9 @@ func computeMove(move []float64, minIdx int, A mat64.Matrix, ab *mat64.Dense, xb
 	col := mat64.Col(nil, nonBasicIdx[minIdx], A)
 	aCol := mat64.NewVector(len(col), col)
 
+	m, _ := ab.Dims()
 	// d = - Ab^-1 Ae
-	nb := len(nonBasicIdx)
+	nb := m
 	d := make([]float64, nb)
 	dVec := mat64.NewVector(nb, d)
 	err := dVec.SolveVec(ab, aCol)
@@ -290,112 +301,21 @@ func computeMove(move []float64, minIdx int, A mat64.Matrix, ab *mat64.Dense, xb
 	floats.Scale(-1, d)
 
 	// If no di < 0, then problem is unbounded.
-	if floats.Min(d) >= 0 {
+	if floats.Min(d) >= unboundedTol {
 		return ErrUnbounded
 	}
 
 	// move = bhat_i / - d_i, assuming d is negative.
 	bHat := xb // ab^-1 b
 	for i, v := range d {
-		if v >= 0 {
+		if v >= moveNegTol {
 			move[i] = math.Inf(1)
 		} else {
-			move[i] = bHat[i] / -v
+			move[i] = bHat[i] / math.Abs(v)
 		}
 	}
 	return nil
 }
-
-/*
-// move stored in place
-func findNext(move []float64, aCol *mat64.Vector, bland bool, r []float64, tol float64, ab *mat64.Dense, xb []float64, nonBasicIdx []int, A mat64.Matrix) (minIdx, replace int, done bool, err error) {
-	m, _ := A.Dims()
-	// Find the element with the minimum reduced cost.
-	if bland {
-		fmt.Println("in bland")
-		// Find the first negative entry of r.
-		// TODO(btracey): Is there a way to communicate entries that are supposed
-		// to be zero? Should we round all numbers below a tol to zero.
-		// Don't overload the solution tolerance with floating point error
-		// tolerance.
-
-		// TODO(btracey); Should only replace if the swapped row keeps aCol
-		// full rank.
-		var found bool
-		for i, v := range r {
-			negTol := 1e-14
-			// Zero column can cause this replacement to be singular. Correct
-			// replacing may be able to deal with that issue.
-			if v < -negTol {
-				minIdx = i
-				found = true
-				break
-			}
-
-		}
-		if !found {
-			panic("lp beale: no negative argument found")
-		}
-	} else {
-		// Replace the most negative element in the simplex.
-		minIdx = floats.MinIdx(r)
-	}
-
-	// If there are no negative entries, then we have found an optimal
-	// solution.
-	if !bland && r[minIdx] >= -tol {
-		// Found minimum successfully
-		// fmt.Println("found successfully")
-		return -1, -1, true, nil
-	}
-	// fmt.Println("not found successfully")
-	bHat := xb // ab^-1 b
-	// fmt.Println("bhat = ", bHat)
-	// fmt.Println(ab)
-	colIdx := nonBasicIdx[minIdx]
-	// TODO(btracey): Can make this a column view.
-	for i := 0; i < m; i++ {
-		aCol.SetVec(i, A.At(i, colIdx))
-	}
-	// d = -ab^-1 * A_minidx.
-	var dVec mat64.Dense
-	err = dVec.Solve(ab, aCol)
-	if err != nil {
-		panic("lp: unexpected linear solve error")
-	}
-	d := mat64.Col(nil, 0, &dVec)
-	//d := dVec.Col(nil, 0)
-	floats.Scale(-1, d)
-
-	// If no di < 0, then problem is unbounded.
-	if floats.Min(d) >= 0 {
-		// fmt.Printf("abmat =\n%0.4v\n", mat64.Formatted(ab))
-		// fmt.Println("ab = ", ab)
-		// fmt.Println("aCol = ", aCol)
-		// fmt.Println("Unbounded, d =", d)
-		// Problem is unbounded
-		// TODO(btracey): What should we return
-		return -1, -1, false, ErrUnbounded
-	} else {
-		// fmt.Println("not unbounded")
-	}
-	//fmt.Println("bhat", bHat)
-	//fmt.Println("d = ", d)
-	for i, v := range d {
-		// Only look at the postive d values
-		if v >= 0 {
-			move[i] = math.Inf(1)
-			continue
-		}
-		move[i] = bHat[i] / -v
-	}
-	//fmt.Println("move", move)
-	// Replace the smallest movement in the basis.
-	fmt.Println(move)
-	replace = floats.MinIdx(move)
-	return minIdx, replace, false, nil
-}
-*/
 
 func verifyInputs(initialBasic []int, c []float64, A mat64.Matrix, b []float64) error {
 	// Verify inputs.
@@ -505,7 +425,8 @@ func findInitialBasic(A mat64.Matrix, b []float64) ([]int, *mat64.Dense, []float
 	// so, the Phase I problem can be avoided. Check if it is.
 	ab := extractColumns(A, basicIdxs)
 	xb, err := initializeFromBasic(ab, b)
-	if err != nil {
+	if err == nil {
+		// Initial problem feasible.
 		return basicIdxs, ab, xb, nil
 	}
 
@@ -572,7 +493,7 @@ func findInitialBasic(A mat64.Matrix, b []float64) ([]int, *mat64.Dense, []float
 	*/
 
 	// Solve this linear program (but with an initial feasible solution provided this time).
-	_, xOpt, newBasic, err := simplex(basicIdxs, c, aNew, b, 1e-14)
+	_, xOpt, newBasic, err := simplex(basicIdxs, c, aNew, b, 1e-10)
 	if err != nil {
 		return nil, nil, nil, errors.New(fmt.Sprintf("lp: error finding feasible basis: %s", err))
 	}
