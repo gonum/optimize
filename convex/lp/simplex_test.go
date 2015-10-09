@@ -99,7 +99,7 @@ func TestSimplex(t *testing.T) {
 			continue
 		}
 		randValue := func() float64 {
-			pZero := 0.0 // make sure there are zeros
+			pZero := 0.2 // make sure there are zeros
 			//var pZero float64
 			v := rand.Float64()
 			if v < pZero {

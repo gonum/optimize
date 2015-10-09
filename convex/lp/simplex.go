@@ -57,6 +57,7 @@ const (
 	blandNegTol  = 1e-14
 	unboundedTol = 0
 	moveNegTol   = 0
+	moveZeroTol  = 1e-14
 )
 
 // simplex solves an LP in standard form:
@@ -226,7 +227,8 @@ func simplex(initialBasic []int, c []float64, A mat64.Matrix, b []float64, tol f
 
 		// Replace the basic index with the smallest move.
 		replace := floats.MinIdx(move)
-		if move[replace] == 0 {
+		//if move[replace] == 0 {
+		if move[replace] < moveZeroTol {
 			// Can't move anywhere, need to use Bland rule instead, which is to
 			// add in the smallest index with a negative r.
 			var found bool
