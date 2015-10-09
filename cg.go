@@ -40,7 +40,7 @@ type CGVariant interface {
 //  - The angle between the gradients at two consecutive iterations ∇f_k and
 //    ∇f_{k+1} is too large.
 //  - The direction d_{k+1} is not a descent direction.
-//  - β_k given by CGVariant.Beta() is equal to zero.
+//  - β_k returned from CGVariant.Beta is equal to zero.
 //
 // The line search for CG must yield step sizes that satisfy the strong Wolfe
 // conditions at every iteration, otherwise the generated search direction
@@ -94,7 +94,7 @@ type CG struct {
 	gradPrevNorm float64
 }
 
-func (cg *CG) Init(loc *Location, xNext []float64) (EvaluationType, IterationType, error) {
+func (cg *CG) Init(loc *Location) (Operation, error) {
 	if cg.IterationRestartFactor < 0 {
 		panic("cg: IterationRestartFactor is negative")
 	}
@@ -125,11 +125,11 @@ func (cg *CG) Init(loc *Location, xNext []float64) (EvaluationType, IterationTyp
 	cg.ls.Linesearcher = cg.Linesearcher
 	cg.ls.NextDirectioner = cg
 
-	return cg.ls.Init(loc, xNext)
+	return cg.ls.Init(loc)
 }
 
-func (cg *CG) Iterate(loc *Location, xNext []float64) (EvaluationType, IterationType, error) {
-	return cg.ls.Iterate(loc, xNext)
+func (cg *CG) Iterate(loc *Location) (Operation, error) {
+	return cg.ls.Iterate(loc)
 }
 
 func (cg *CG) InitDirection(loc *Location, dir []float64) (stepSize float64) {

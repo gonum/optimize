@@ -39,7 +39,7 @@ type BFGS struct {
 	first bool // Is it the first iteration (used to set the scale of the initial hessian)
 }
 
-func (b *BFGS) Init(loc *Location, xNext []float64) (EvaluationType, IterationType, error) {
+func (b *BFGS) Init(loc *Location) (Operation, error) {
 	if b.Linesearcher == nil {
 		b.Linesearcher = &Bisection{}
 	}
@@ -49,11 +49,11 @@ func (b *BFGS) Init(loc *Location, xNext []float64) (EvaluationType, IterationTy
 	b.ls.Linesearcher = b.Linesearcher
 	b.ls.NextDirectioner = b
 
-	return b.ls.Init(loc, xNext)
+	return b.ls.Init(loc)
 }
 
-func (b *BFGS) Iterate(loc *Location, xNext []float64) (EvaluationType, IterationType, error) {
-	return b.ls.Iterate(loc, xNext)
+func (b *BFGS) Iterate(loc *Location) (Operation, error) {
+	return b.ls.Iterate(loc)
 }
 
 func (b *BFGS) InitDirection(loc *Location, dir []float64) (stepSize float64) {
@@ -117,7 +117,7 @@ func (b *BFGS) NextDirection(loc *Location, dir []float64) (stepSize float64) {
 		yDotY := floats.Dot(b.y, b.y)
 		scale := sDotY / yDotY
 		for i := 0; i < len(loc.X); i++ {
-			for j := 0; j < len(loc.X); j++ {
+			for j := i; j < len(loc.X); j++ {
 				if i == j {
 					b.invHess.SetSym(i, i, scale)
 				} else {

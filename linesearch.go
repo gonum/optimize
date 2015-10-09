@@ -10,24 +10,26 @@ import (
 	"github.com/gonum/floats"
 )
 
-// LinesearchMethod represents an abstract optimization method in which
-// a function is optimized through successive line search optimizations.
-// It consists of a NextDirectioner, which specifies the search direction
-// of each linesearch, and a Linesearcher which performs a linesearch along
-// the search direction.
+// LinesearchMethod represents an abstract optimization method in which a
+// function is optimized through successive line search optimizations.
 type LinesearchMethod struct {
+	// NextDirectioner specifies the search direction of each linesearch.
 	NextDirectioner NextDirectioner
-	Linesearcher    Linesearcher
+	// Linesearcher performs a linesearch along the search direction.
+	Linesearcher Linesearcher
 
-	x     []float64 // Starting point for the current iteration.
-	dir   []float64 // Search direction for the current iteration.
-	first bool      // Indicator of the first iteration.
+	x   []float64 // Starting point for the current iteration.
+	dir []float64 // Search direction for the current iteration.
 
-	evalType EvaluationType
-	iterType IterationType
+	first     bool      // Indicator of the first iteration.
+	nextMajor bool      // Indicates that MajorIteration must be commanded at the next call to Iterate.
+	eval      Operation // Indicator of valid fields in Location.
+
+	lastStep float64   // Step taken from x in the previous call to Iterate.
+	lastOp   Operation // Operation returned from the previous call to Iterate.
 }
 
-func (ls *LinesearchMethod) Init(loc *Location, xNext []float64) (EvaluationType, IterationType, error) {
+func (ls *LinesearchMethod) Init(loc *Location) (Operation, error) {
 	if loc.Gradient == nil {
 		panic("linesearch: gradient is nil")
 	}
@@ -35,96 +37,145 @@ func (ls *LinesearchMethod) Init(loc *Location, xNext []float64) (EvaluationType
 	dim := len(loc.X)
 	ls.x = resize(ls.x, dim)
 	ls.dir = resize(ls.dir, dim)
+
 	ls.first = true
+	ls.nextMajor = false
 
-	return ls.initNextLinesearch(loc, xNext)
+	// Indicate that all fields of loc are valid.
+	ls.eval = FuncEvaluation | GradEvaluation
+	if loc.Hessian != nil {
+		ls.eval |= HessEvaluation
+	}
+
+	ls.lastStep = math.NaN()
+	ls.lastOp = NoOperation
+
+	return ls.initNextLinesearch(loc)
 }
 
-func (ls *LinesearchMethod) Iterate(loc *Location, xNext []float64) (EvaluationType, IterationType, error) {
-	if ls.iterType == SubIteration {
-		// We needed to evaluate invalid fields of Location. Now we have them
-		// and can announce MajorIteration.
-		copy(xNext, loc.X)
-		ls.evalType = NoEvaluation
-		ls.iterType = MajorIteration
-		return ls.evalType, ls.iterType, nil
-	}
+func (ls *LinesearchMethod) Iterate(loc *Location) (Operation, error) {
+	switch ls.lastOp {
+	case NoOperation:
+		// TODO(vladimir-ch): Either Init has not been called, or the caller is
+		// trying to resume the optimization run after Iterate previously
+		// returned with an error. Decide what is the proper thing to do. See also #125.
 
-	if ls.iterType == MajorIteration {
-		// The linesearch previously signaled MajorIteration. Since we're here,
-		// it means that the previous location is not good enough to converge,
-		// so start the next linesearch.
-		return ls.initNextLinesearch(loc, xNext)
-	}
+	case MajorIteration:
+		// The previous updated location did not converge the full
+		// optimization. Initialize a new Linesearch.
+		return ls.initNextLinesearch(loc)
 
-	projGrad := floats.Dot(loc.Gradient, ls.dir)
-	if ls.Linesearcher.Finished(loc.F, projGrad) {
-		copy(xNext, loc.X)
-		// Check if the last evaluation evaluated all fields of Location.
-		ls.evalType = complementEval(loc, ls.evalType)
-		if ls.evalType == NoEvaluation {
-			// Location is complete and MajorIteration can be announced directly.
-			ls.iterType = MajorIteration
-		} else {
-			// Location is not complete, evaluate its invalid fields in SubIteration.
-			ls.iterType = SubIteration
+	default:
+		// Update the indicator of valid fields of loc.
+		ls.eval |= ls.lastOp
+
+		if ls.nextMajor {
+			ls.nextMajor = false
+
+			// Linesearcher previously finished, and the invalid fields of loc
+			// have now been validated. Announce MajorIteration.
+			ls.lastOp = MajorIteration
+			return ls.lastOp, nil
 		}
-		return ls.evalType, ls.iterType, nil
 	}
 
-	// Line search not done, just iterate.
-	stepSize, evalType, err := ls.Linesearcher.Iterate(loc.F, projGrad)
+	// Continue the linesearch.
+
+	f := math.NaN()
+	if ls.eval&FuncEvaluation != 0 {
+		f = loc.F
+	}
+	projGrad := math.NaN()
+	if ls.eval&GradEvaluation != 0 {
+		projGrad = floats.Dot(loc.Gradient, ls.dir)
+	}
+	op, step, err := ls.Linesearcher.Iterate(f, projGrad)
 	if err != nil {
-		ls.evalType = NoEvaluation
-		ls.iterType = NoIteration
-		return ls.evalType, ls.iterType, err
+		return ls.error(err)
 	}
 
-	floats.AddScaledTo(xNext, ls.x, stepSize, ls.dir)
-	// Compare the starting point for the current iteration with the next
-	// evaluation point to make sure that rounding errors do not prevent progress.
-	if floats.Equal(ls.x, xNext) {
-		ls.evalType = NoEvaluation
-		ls.iterType = NoIteration
-		return ls.evalType, ls.iterType, ErrNoProgress
+	switch op {
+	case MajorIteration:
+		// Linesearch has been finished.
+
+		ls.lastOp = complementEval(loc, ls.eval)
+		if ls.lastOp == NoOperation {
+			// loc is complete, MajorIteration can be declared directly.
+			ls.lastOp = MajorIteration
+		} else {
+			// Declare MajorIteration on the next call to Iterate.
+			ls.nextMajor = true
+		}
+
+	case FuncEvaluation, GradEvaluation, FuncEvaluation | GradEvaluation:
+		if step != ls.lastStep {
+			// We are moving to a new location, and not, say, evaluating extra
+			// information at the current location.
+
+			// Compute the next evaluation point and store it in loc.X.
+			floats.AddScaledTo(loc.X, ls.x, step, ls.dir)
+			if floats.Equal(ls.x, loc.X) {
+				// Step size has become so small that the next evaluation point is
+				// indistinguishable from the starting point for the current
+				// iteration due to rounding errors.
+				return ls.error(ErrNoProgress)
+			}
+			ls.lastStep = step
+			ls.eval = NoOperation // Indicate all invalid fields of loc.
+		}
+		ls.lastOp = op
+
+	default:
+		panic("linesearch: Linesearcher returned invalid operation")
 	}
 
-	ls.evalType = evalType
-	ls.iterType = MinorIteration
-	return ls.evalType, ls.iterType, nil
+	return ls.lastOp, nil
 }
 
-func (ls *LinesearchMethod) initNextLinesearch(loc *Location, xNext []float64) (EvaluationType, IterationType, error) {
+func (ls *LinesearchMethod) error(err error) (Operation, error) {
+	ls.lastOp = NoOperation
+	return ls.lastOp, err
+}
+
+// initNextLinesearch initializes the next linesearch using the previous
+// complete location stored in loc. It fills loc.X and returns an evaluation
+// to be performed at loc.X.
+func (ls *LinesearchMethod) initNextLinesearch(loc *Location) (Operation, error) {
 	copy(ls.x, loc.X)
 
-	var stepSize float64
+	var step float64
 	if ls.first {
-		stepSize = ls.NextDirectioner.InitDirection(loc, ls.dir)
 		ls.first = false
+		step = ls.NextDirectioner.InitDirection(loc, ls.dir)
 	} else {
-		stepSize = ls.NextDirectioner.NextDirection(loc, ls.dir)
+		step = ls.NextDirectioner.NextDirection(loc, ls.dir)
 	}
 
 	projGrad := floats.Dot(loc.Gradient, ls.dir)
 	if projGrad >= 0 {
-		ls.evalType = NoEvaluation
-		ls.iterType = NoIteration
-		return ls.evalType, ls.iterType, ErrNonNegativeStepDirection
+		return ls.error(ErrNonDescentDirection)
 	}
 
-	ls.evalType = ls.Linesearcher.Init(loc.F, projGrad, stepSize)
-
-	floats.AddScaledTo(xNext, ls.x, stepSize, ls.dir)
-	// Compare the starting point for the current iteration with the next
-	// evaluation point to make sure that rounding errors do not prevent progress.
-	if floats.Equal(ls.x, xNext) {
-		ls.evalType = NoEvaluation
-		ls.iterType = NoIteration
-		return ls.evalType, ls.iterType, ErrNoProgress
+	op := ls.Linesearcher.Init(loc.F, projGrad, step)
+	switch op {
+	case FuncEvaluation, GradEvaluation, FuncEvaluation | GradEvaluation:
+	default:
+		panic("linesearch: Linesearcher returned invalid operation")
 	}
 
-	ls.iterType = MinorIteration
-	return ls.evalType, ls.iterType, nil
+	floats.AddScaledTo(loc.X, ls.x, step, ls.dir)
+	if floats.Equal(ls.x, loc.X) {
+		// Step size is so small that the next evaluation point is
+		// indistinguishable from the starting point for the current iteration
+		// due to rounding errors.
+		return ls.error(ErrNoProgress)
+	}
+
+	ls.lastStep = step
+	ls.eval = NoOperation // Invalidate all fields of loc.
+
+	ls.lastOp = op
+	return ls.lastOp, nil
 }
 
 // ArmijoConditionMet returns true if the Armijo condition (aka sufficient
