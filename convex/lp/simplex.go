@@ -54,13 +54,15 @@ var (
 const (
 	linDepTol = 1e-8
 
-	initPosTol   = 0 // tolerance on x being positive for the initial feasible.
-	blandNegTol  = 1e-14
-	unboundedTol = 0
-	moveNegTol   = 0
-	moveZeroTol  = 0
-	rRoundTol    = 1e-13 // round r to 0
-	dRoundTol    = 1e-13
+	initPosTol    = 1e-14 // tolerance on x being positive for the initial feasible. Needs to be >0 otherwise get singular.
+	blandNegTol   = 1e-14
+	unboundedTol  = 0
+	moveNegTol    = 0
+	moveZeroTol   = 0
+	rRoundTol     = 1e-13 // round r to 0
+	dRoundTol     = 1e-13
+	phaseIZeroTol = 1e-14 // tolerance on x value of the phase I problem being zero
+	blandZeroTol  = 1e-14 // tolerance on zero move
 )
 
 // simplex solves an LP in standard form:
@@ -85,13 +87,14 @@ func simplex(initialBasic []int, c []float64, A mat64.Matrix, b []float64, tol f
 		return math.NaN(), nil, nil, err
 	}
 	m, n := A.Dims()
-
-	fmt.Printf("Ainit\n%0.4v\n", mat64.Formatted(A))
-	fmt.Printf("a = %#v\n", A)
-	fmt.Printf("b = %#v\n", b)
-	fmt.Printf("c = %#v\n", c)
-	fmt.Printf("initial basic = %#v\n", initialBasic)
-	fmt.Println("tol = ", tol)
+	/*
+		fmt.Printf("Ainit\n%0.4v\n", mat64.Formatted(A))
+		fmt.Printf("a = %#v\n", A)
+		fmt.Printf("b = %#v\n", b)
+		fmt.Printf("c = %#v\n", c)
+		fmt.Printf("initial basic = %#v\n", initialBasic)
+		fmt.Println("tol = ", tol)
+	*/
 
 	// There is at least one optimal solution to the LP which is at the intersection
 	// to a set of constraint boundaries. For a standard form LP with m variables
@@ -122,7 +125,6 @@ func simplex(initialBasic []int, c []float64, A mat64.Matrix, b []float64, tol f
 			panic("lp: incorrect number of initial vectors")
 		}
 		ab = extractColumns(A, initialBasic)
-		fmt.Println("ab = ", ab)
 		xb, err = initializeFromBasic(ab, b)
 		if err != nil {
 			panic(err)
@@ -135,6 +137,7 @@ func simplex(initialBasic []int, c []float64, A mat64.Matrix, b []float64, tol f
 			return math.NaN(), nil, nil, err
 		}
 	}
+	fmt.Println("After initialize")
 	fmt.Printf("Ainit\n%0.4v\n", mat64.Formatted(A))
 	fmt.Printf("a = %#v\n", A)
 	fmt.Printf("b = %#v\n", b)
@@ -206,8 +209,10 @@ func simplex(initialBasic []int, c []float64, A mat64.Matrix, b []float64, tol f
 	// the intersection of several constraints. Use the Bland rule instead
 	// of the rule in step 4 to avoid cycling.)
 
-	fmt.Printf("ab pre =\n%0.4v\n", mat64.Formatted(ab))
-	fmt.Printf("an pre =\n%0.4v\n", mat64.Formatted(an))
+	/*
+		fmt.Printf("ab pre =\n%0.4v\n", mat64.Formatted(ab))
+		fmt.Printf("an pre =\n%0.4v\n", mat64.Formatted(an))
+	*/
 	for {
 		// Compute reduced costs -- r = cn - an^T ab^-T cb
 		var tmp mat64.Vector
@@ -234,9 +239,11 @@ func simplex(initialBasic []int, c []float64, A mat64.Matrix, b []float64, tol f
 			}
 		}
 
-		fmt.Println("r = ", r)
-		fmt.Println("b = ", b)
-		fmt.Println("minidx = ", minIdx)
+		/*
+			fmt.Println("r = ", r)
+			fmt.Println("b = ", b)
+			fmt.Println("minidx = ", minIdx)
+		*/
 
 		// Compute the moving distance.
 		err = computeMove(move, minIdx, A, ab, xb, nonBasicIdx)
@@ -246,15 +253,19 @@ func simplex(initialBasic []int, c []float64, A mat64.Matrix, b []float64, tol f
 			}
 			panic(fmt.Sprintf("lp: unexpected error %s", err))
 		}
-		fmt.Println("move = ", move)
+		//fmt.Println("move = ", move)
 
 		// Replace the basic index with the smallest move.
 		replace := floats.MinIdx(move)
-		//if move[replace] == 0 {
+		fmt.Println("move = ", move)
+		fmt.Println("r = ", r)
 		if move[replace] <= moveZeroTol {
-			fmt.Println("in beale")
 			// Can't move anywhere, need to use Bland rule instead, which is to
 			// add in the smallest index with a negative r.
+			// This is assuming that when the index is replaced, the resulting
+			// ab is still singular. Instead, try each possible index in succession.
+			// If the index can be replaced without creating a singular ab, do
+			// so, otherwise try the next r.
 			var found bool
 			for i, v := range r {
 				if v < -blandNegTol {
@@ -264,11 +275,12 @@ func simplex(initialBasic []int, c []float64, A mat64.Matrix, b []float64, tol f
 				}
 
 			}
+			fmt.Println("min idx = ", minIdx)
 			if !found {
 				panic("lp bland: no negative argument found")
 			}
-			fmt.Println("minidx bland = ", minIdx)
 			err = computeMove(move, minIdx, A, ab, xb, nonBasicIdx)
+			//fmt.Println("move = ", move)
 			if err != nil {
 				if err == ErrUnbounded {
 					return math.Inf(-1), nil, nil, ErrUnbounded
@@ -276,7 +288,27 @@ func simplex(initialBasic []int, c []float64, A mat64.Matrix, b []float64, tol f
 				panic(fmt.Sprintf("lp: unexpected error %s", err))
 			}
 			replace = floats.MinIdx(move)
-			fmt.Println("move bland = ", move)
+			if math.Abs(move[replace]) < blandZeroTol {
+				replace = -1
+				// Find a zero index where replacement is non-singular.
+				biCopy := make([]int, len(basicIdxs))
+				for replaceTmp, v := range move {
+					if v > blandZeroTol {
+						continue
+					}
+					copy(biCopy, basicIdxs)
+					biCopy[replaceTmp] = nonBasicIdx[minIdx]
+					abTmp := extractColumns(A, biCopy)
+					// If the condition number is reasonable, use this index.
+					if mat64.Cond(abTmp, 1) < 1e16 {
+						replace = replaceTmp
+						break
+					}
+				}
+				if replace == -1 {
+					panic("lp: bland: all replacements cause ill-conditioned ab")
+				}
+			}
 		}
 
 		// Replace the constrained basicIdx with the newIdx.
@@ -287,10 +319,12 @@ func simplex(initialBasic []int, c []float64, A mat64.Matrix, b []float64, tol f
 		ab.SetCol(replace, tmpCol2)
 		an.SetCol(minIdx, tmpCol1)
 
+		//fmt.Println("Ab = ")
+		//fmt.Printf("% 0.4v\n", mat64.Formatted(ab))
+
 		// Compute the new xb.
 		xbVec := mat64.NewVector(len(xb), xb)
 		err = xbVec.SolveVec(ab, bVec)
-		fmt.Printf("% 0.4v\n", mat64.Formatted(ab))
 		if err != nil {
 			panic("lp: unexpected linear solve error: " + err.Error())
 		}
@@ -312,13 +346,15 @@ func simplex(initialBasic []int, c []float64, A mat64.Matrix, b []float64, tol f
 	return opt, xopt, basicIdxs, nil
 }
 
+func replaceBland() int {
+
+}
+
 // computeMove computes how far can be moved replacing the given index.
 func computeMove(move []float64, minIdx int, A mat64.Matrix, ab *mat64.Dense, xb []float64, nonBasicIdx []int) error {
 	// Find ae.
 	col := mat64.Col(nil, nonBasicIdx[minIdx], A)
 	aCol := mat64.NewVector(len(col), col)
-
-	fmt.Println("col = ", col)
 
 	m, _ := ab.Dims()
 	// d = - Ab^-1 Ae
@@ -331,14 +367,11 @@ func computeMove(move []float64, minIdx int, A mat64.Matrix, ab *mat64.Dense, xb
 	}
 	floats.Scale(-1, d)
 
-	fmt.Println("d = ", d)
-
 	for i, v := range d {
 		if math.Abs(v) < dRoundTol {
 			d[i] = 0
 		}
 	}
-	fmt.Println("d after = ", d)
 
 	// If no di < 0, then problem is unbounded.
 	if floats.Min(d) >= unboundedTol {
@@ -423,6 +456,7 @@ func initializeFromBasic(ab *mat64.Dense, b []float64) (xb []float64, err error)
 	m, _ := ab.Dims()
 	xb = make([]float64, m)
 	xbMat := mat64.NewVector(m, xb)
+
 	err = xbMat.SolveVec(ab, mat64.NewVector(m, b))
 	if err != nil {
 		return nil, errors.New("lp: subcolumns of A for supplied initial basic singular")
@@ -464,8 +498,10 @@ func findInitialBasic(A mat64.Matrix, b []float64) ([]int, *mat64.Dense, []float
 	// It may be that this linearly independent basis is also a feasible set. If
 	// so, the Phase I problem can be avoided. Check if it is.
 	ab := extractColumns(A, basicIdxs)
-	fmt.Println("Finding initial")
-	fmt.Println("ab = ", ab)
+	cond := mat64.Cond(ab, 1)
+	if cond > 1e12 {
+		panic("linearly dependend basic has bad condition number")
+	}
 	xb, err := initializeFromBasic(ab, b)
 	if err == nil {
 		// Initial problem feasible.
@@ -495,6 +531,11 @@ func findInitialBasic(A mat64.Matrix, b []float64) ([]int, *mat64.Dense, []float
 	// Find the largest constraint violator.
 	// Compute a_{n+1} = b - \sum{i in basicIdxs}a_i + a_j. j is in basicIDx, so
 	// instead just subtract the basicIdx columns that are not minIDx.
+	/*
+		fmt.Println("ab = ", ab)
+		fmt.Println("basicIdx", basicIdxs)
+		fmt.Println("xb = ", xb)
+	*/
 	minIdx := floats.MinIdx(xb)
 	aX1 := make([]float64, m)
 	copy(aX1, b)
@@ -518,6 +559,11 @@ func findInitialBasic(A mat64.Matrix, b []float64) ([]int, *mat64.Dense, []float
 	c := make([]float64, n+1)
 	c[n] = 1
 
+	condANew := mat64.Cond(aNew, 1)
+	if condANew > 1e12 {
+		panic("initial simplex condition number bad")
+	}
+
 	/*
 		// Validation code.
 		// The vector of all 1s should be a feasible solution to this new LP
@@ -540,22 +586,56 @@ func findInitialBasic(A mat64.Matrix, b []float64) ([]int, *mat64.Dense, []float
 		return nil, nil, nil, errors.New(fmt.Sprintf("lp: error finding feasible basis: %s", err))
 	}
 
+	/*
+		fmt.Println("Done phase I")
+		fmt.Println("xopt = ", xOpt)
+		fmt.Println("xopt n", xOpt[n])
+	*/
+
 	// If n+1 is part of the solution basis then the problem is infeasible. If
 	// not, then the problem is feasible and newBasic is an initial feasible
 	// solution.
-	var inBasis bool
-	for i, v := range newBasic {
-		if v == n {
-			inBasis = true
-			break
-		}
-		xb[i] = xOpt[v]
-	}
-	if inBasis {
+	if math.Abs(xOpt[n]) > phaseIZeroTol {
 		return nil, nil, nil, ErrInfeasible
 	}
-	ab = extractColumns(A, newBasic)
-	return newBasic, ab, xb, nil
+
+	// The value is zero. If it's not in the basis then the basis is a feasible
+	// solution.
+	basicIdx := -1
+	basicMap := make(map[int]struct{})
+	for i, v := range newBasic {
+		if v == n {
+			basicIdx = i
+		}
+		basicMap[v] = struct{}{}
+		xb[i] = xOpt[v]
+	}
+	if basicIdx == -1 {
+		// Not in the basis.
+		ab = extractColumns(A, newBasic)
+		return newBasic, ab, xb, nil
+	}
+
+	// The value is zero, but it's still in the basis. Try swapping in other
+	// columns until a feasible solution is found.
+	for i := range xOpt {
+		if _, inBasic := basicMap[i]; inBasic {
+			// Already in basis.
+			continue
+		}
+		// Replace n with this column
+		newBasic[basicIdx] = i
+		ab := extractColumns(A, newBasic)
+		xb, err := initializeFromBasic(ab, b)
+		if err == nil {
+			// Problem feasible with this column
+			return newBasic, ab, xb, nil
+		}
+	}
+	// Could not find feasible set.
+	return nil, nil, nil, ErrInfeasible
+	// Should just say it's infeasible rather than panic, but panic now for testing.
+	//panic("lp: PhaseI returned feasible, but no feasible column set found.")
 }
 
 // findLinearlyIndependnt finds a set of linearly independent columns of A, and
@@ -568,6 +648,9 @@ func findLinearlyIndependent(A mat64.Matrix) []int {
 	// Walk in reverse order because slack variables are typically the last columns
 	// of A.
 	for i := n - 1; i >= 0; i-- {
+		if len(idxs) == m {
+			break
+		}
 		mat64.Col(newCol, i, A)
 		if len(idxs) == 0 {
 			// A column is linearly independent from the null set.
@@ -582,9 +665,6 @@ func findLinearlyIndependent(A mat64.Matrix) []int {
 		}
 		columns.SetCol(len(idxs), newCol)
 		idxs = append(idxs, i)
-		if len(idxs) == m {
-			break
-		}
 	}
 	return idxs
 }
@@ -592,22 +672,12 @@ func findLinearlyIndependent(A mat64.Matrix) []int {
 // linearlyDependent returns whether the vector is linearly dependent
 // with the columns of A. It assumes that A is a full-rank matrix.
 func linearlyDependent(vec *mat64.Vector, A mat64.Matrix, tol float64) bool {
-	// A vector is linearly dependent on the others if it can
-	// be computed from a weighted sum of the existing columns, that
-	// is c_new = \sum_i w_i c_i. In matrix form, this is represented
-	// as c_new = C * w, where C is the composition of the existing
-	// columns. We can solve this system of equations for w to get w^.
-	// If C * w^ = c_new, then c_new is linearly dependent. Otherwise
-	// it is independent.
-
-	var wHat mat64.Vector
-	err := wHat.SolveVec(A, vec)
-	if err != nil {
-		// Solve can only fail if C is not of full rank. Method assumes A is
-		// of full rank.
-		panic("lp: unexpected linear solve failure")
-	}
-	var test mat64.Vector
-	test.MulVec(A, &wHat)
-	return mat64.EqualApprox(&test, vec, linDepTol)
+	// Add vec to the columns of A, and see if the condition number is reasonable.
+	m, n := A.Dims()
+	aNew := mat64.NewDense(m, n+1, nil)
+	aNew.Copy(A)
+	col := mat64.Col(nil, 0, vec)
+	aNew.SetCol(n, col)
+	cond := mat64.Cond(aNew, 1)
+	return cond > 1e12
 }
