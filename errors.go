@@ -27,6 +27,8 @@ var (
 	// progress because there is no change in location after Linesearcher step
 	// due to floating-point arithmetic.
 	ErrNoProgress = errors.New("linesearch: no change in location after Linesearcher step")
+
+	ErrFunctionConvergeNil = errors.New("global: function convergence must not be nil")
 )
 
 // ErrFunc is returned when an initial function value is invalid. The error
@@ -61,3 +63,8 @@ func (err ErrGrad) Error() string {
 		panic("optimize: bad ErrGrad")
 	}
 }
+
+// List of shared panic strings
+var (
+	badProblem = "optimize: objective function is undefined"
+)
