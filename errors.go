@@ -29,6 +29,10 @@ var (
 	ErrNoProgress = errors.New("linesearch: no change in location after Linesearcher step")
 
 	ErrFunctionConvergeNil = errors.New("global: function convergence must not be nil")
+
+	// ErrLinesearcherBound signifies that a Linesearcher reached a step that
+	// lies out of allowed bounds.
+	ErrLinesearcherBound = errors.New("linesearch: step out of bounds")
 )
 
 // ErrFunc is returned when an initial function value is invalid. The error
