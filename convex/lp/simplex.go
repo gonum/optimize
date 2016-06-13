@@ -573,12 +573,12 @@ func findInitialBasic(A mat64.Matrix, b []float64) ([]int, *mat64.Dense, []float
 			continue
 		}
 		newBasic[addedIdx] = i
-		if set {
-			mat64.Col(col, i, A)
-			ab.SetCol(addedIdx, col)
-		} else {
+		if !set {
 			extractColumns(ab, A, newBasic)
 			set = true
+		} else {
+			mat64.Col(col, i, A)
+			ab.SetCol(addedIdx, col)
 		}
 		err := initializeFromBasic(xb, ab, b)
 		if err == nil {
